@@ -1,2 +1,3 @@
 RewriteEngine On
 RewriteRule ^admin/?$ admin.php [L,QSA]
+RewriteRule ^register/?$ register.php [L,QSA]
