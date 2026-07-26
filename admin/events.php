@@ -48,7 +48,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
 
     if ($action === 'save_event') {
-        require_once __DIR__ . '/../admin.php';
         requireAdminAuthentication();
 
         $eventFormData = [
@@ -85,7 +84,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $adminError = 'Unable to save event: ' . $exception->getMessage();
         }
     } elseif ($action === 'delete_event') {
-        require_once __DIR__ . '/../admin.php';
         requireAdminAuthentication();
         $eventId = (int) ($_POST['event_id'] ?? 0);
         if ($eventId > 0 && $pdo !== null) {
