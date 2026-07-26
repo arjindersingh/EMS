@@ -63,6 +63,9 @@ $adminError = $_SESSION['admin_error'] ?? '';
 $adminSuccess = $_SESSION['admin_success'] ?? '';
 unset($_SESSION['admin_error'], $_SESSION['admin_success']);
 
+// Load event helper functions (no side effects)
+require_once __DIR__ . '/admin/events_funcs.php';
+
 $pdo = null;
 $events = [];
 $eventFormData = [
