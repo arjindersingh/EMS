@@ -8,7 +8,8 @@ services:
     volumes:
       - ./:/var/www/html
     depends_on:
-      - mysql
+      mysql:
+        condition: service_healthy
     environment:
       DB_HOST: mysql
       DB_PORT: 3306
@@ -26,6 +27,12 @@ services:
       MYSQL_USER: ems_user
       MYSQL_PASSWORD: ems_password
       MYSQL_ROOT_PASSWORD: root_password
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
     volumes:
       - mysql_data:/var/lib/mysql
 
