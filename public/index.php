@@ -9,9 +9,7 @@ try {
     $config = getDbConfig();
     unset($config['password']);
 
-    echo '<h1>EMS is ready</h1>';
-    echo '<p>PHP and MySQL are configured successfully.</p>';
-    echo '<pre>' . htmlspecialchars(json_encode($config, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES), ENT_QUOTES, 'UTF-8') . '</pre>';
+    include __DIR__ . '/home.php';
 } catch (PDOException $exception) {
     echo '<h1>Database connection failed</h1>';
     echo '<p>' . htmlspecialchars($exception->getMessage(), ENT_QUOTES, 'UTF-8') . '</p>';

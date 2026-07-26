@@ -15,6 +15,7 @@ services:
       DB_DATABASE: ems_db
       DB_USERNAME: ems_user
       DB_PASSWORD: ems_password
+      ADMIN_USERS: admin:admin123,editor:editor123
 
   mysql:
     image: mysql:8.0
