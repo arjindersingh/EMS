@@ -14,8 +14,6 @@ $pdo = null;
 $events = [];
 $selectedEvent = null;
 $selectedEventId = 0;
-$selectedSchedule = null;
-$eventSchedules = [];
 $eventFormData = [
     'event_id' => '',
     'event_title' => '',
@@ -38,14 +36,6 @@ $eventFormData = [
     'registration_end_date' => '',
     'registration_fee' => '0.00',
 ];
-$scheduleFormData = [
-    'schedule_id' => '',
-    'event_id' => '',
-    'schedule_start_date' => '',
-    'schedule_end_date' => '',
-    'schedule_description' => '',
-];
-
 try {
     $pdo = createDbConnection();
     ensureEventsTable($pdo);
@@ -107,44 +97,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $adminError = 'Unable to delete event: ' . $exception->getMessage();
             }
         }
-    } elseif ($action === 'save_schedule') {
-        requireAdminAuthentication();
-        $eventId = (int) ($_POST['event_id'] ?? 0);
-        $scheduleId = (int) ($_POST['schedule_id'] ?? 0);
-
-        $scheduleFormData = [
-            'schedule_id' => $scheduleId,
-            'event_id' => $eventId,
-            'schedule_start_date' => trim((string) ($_POST['schedule_start_date'] ?? '')),
-            'schedule_end_date' => trim((string) ($_POST['schedule_end_date'] ?? '')),
-            'schedule_description' => trim((string) ($_POST['schedule_description'] ?? '')),
-        ];
-
-        try {
-            saveEventSchedule($pdo, $scheduleFormData);
-            $_SESSION['admin_success'] = $scheduleId > 0 ? 'Schedule updated successfully.' : 'Schedule added successfully.';
-            header('Location: /admin?edit=' . $eventId);
-            exit;
-        } catch (InvalidArgumentException $exception) {
-            $adminError = $exception->getMessage();
-        } catch (PDOException $exception) {
-            $adminError = 'Unable to save schedule: ' . $exception->getMessage();
-        }
-    } elseif ($action === 'delete_schedule') {
-        requireAdminAuthentication();
-        $scheduleId = (int) ($_POST['schedule_id'] ?? 0);
-        $eventId = (int) ($_POST['event_id'] ?? 0);
-
-        if ($scheduleId > 0 && $pdo !== null) {
-            try {
-                deleteEventSchedule($pdo, $scheduleId);
-                $_SESSION['admin_success'] = 'Schedule deleted successfully.';
-                header('Location: /admin?edit=' . $eventId);
-                exit;
-            } catch (PDOException $exception) {
-                $adminError = 'Unable to delete schedule: ' . $exception->getMessage();
-            }
-        }
     }
 }
 
@@ -155,29 +107,8 @@ if (isset($_GET['edit']) && $pdo !== null) {
     if ($selectedEvent) {
         $eventFormData = $selectedEvent;
         $selectedEventId = $editEventId;
-        $eventSchedules = getEventSchedulesByEventId($pdo, $selectedEventId);
     } else {
         $adminError = 'Event not found.';
-    }
-}
-
-if ($selectedEventId > 0 && $pdo !== null && empty($eventSchedules)) {
-    $eventSchedules = getEventSchedulesByEventId($pdo, $selectedEventId);
-}
-
-if (isset($_GET['schedule_edit']) && $pdo !== null) {
-    $scheduleEditId = (int) $_GET['schedule_edit'];
-    $selectedSchedule = getEventScheduleById($pdo, $scheduleEditId);
-    if ($selectedSchedule && $selectedEventId > 0 && (int) $selectedSchedule['event_id'] === $selectedEventId) {
-        $scheduleFormData = [
-            'schedule_id' => (int) $selectedSchedule['schedule_id'],
-            'event_id' => $selectedEventId,
-            'schedule_start_date' => $selectedSchedule['schedule_start_date'] ?? '',
-            'schedule_end_date' => $selectedSchedule['schedule_end_date'] ?? '',
-            'schedule_description' => $selectedSchedule['schedule_description'] ?? '',
-        ];
-    } else {
-        $adminError = 'Schedule not found.';
     }
 }
 
@@ -265,69 +196,7 @@ $eventTypeOptions = ['Academic','Cultural','Sports','Seminar','Workshop','Confer
             </form>
 
             <hr>
-            <h3>Event Schedules</h3>
-            <p>Choose an event above, then add one or more schedules below. Each schedule can have a start date, end date, and description.</p>
-
-            <?php if ($selectedEventId > 0 && $selectedEvent): ?>
-                <form method="post">
-                    <input type="hidden" name="action" value="save_schedule">
-                    <input type="hidden" name="schedule_id" value="<?php echo htmlspecialchars((string) ($scheduleFormData['schedule_id'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
-                    <input type="hidden" name="event_id" value="<?php echo (int) $selectedEventId; ?>">
-
-                    <label for="schedule_start_date">Schedule Start Date</label>
-                    <input id="schedule_start_date" name="schedule_start_date" type="date" value="<?php echo htmlspecialchars((string) ($scheduleFormData['schedule_start_date'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>" required>
-
-                    <label for="schedule_end_date">Schedule End Date</label>
-                    <input id="schedule_end_date" name="schedule_end_date" type="date" value="<?php echo htmlspecialchars((string) ($scheduleFormData['schedule_end_date'] ?? ''), ENT_QUOTES, 'UTF-8'); ?>">
-
-                    <label for="schedule_description">Schedule Description</label>
-                    <textarea id="schedule_description" name="schedule_description"><?php echo htmlspecialchars((string) ($scheduleFormData['schedule_description'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></textarea>
-
-                    <div class="actions">
-                        <button type="submit">Save Schedule</button>
-                        <?php if (!empty($scheduleFormData['schedule_id'])): ?>
-                            <a href="/admin?edit=<?php echo (int) $selectedEventId; ?>"><button type="button">Cancel Edit</button></a>
-                        <?php endif; ?>
-                    </div>
-                </form>
-
-                <h4>Schedules for <?php echo htmlspecialchars((string) ($selectedEvent['event_title'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></h4>
-                <?php if (!empty($eventSchedules)): ?>
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Start Date</th>
-                                <th>End Date</th>
-                                <th>Description</th>
-                                <th>Actions</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php foreach ($eventSchedules as $schedule): ?>
-                                <tr>
-                                    <td><?php echo htmlspecialchars((string) ($schedule['schedule_start_date'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
-                                    <td><?php echo htmlspecialchars((string) ($schedule['schedule_end_date'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
-                                    <td><?php echo nl2br(htmlspecialchars((string) ($schedule['schedule_description'] ?? ''), ENT_QUOTES, 'UTF-8')); ?></td>
-                                    <td>
-                                        <a href="/admin?edit=<?php echo (int) $selectedEventId; ?>&schedule_edit=<?php echo (int) $schedule['schedule_id']; ?>">Edit</a>
-                                        |
-                                        <form class="inline-form" method="post" onsubmit="return confirm('Delete this schedule?');">
-                                            <input type="hidden" name="action" value="delete_schedule">
-                                            <input type="hidden" name="schedule_id" value="<?php echo (int) $schedule['schedule_id']; ?>">
-                                            <input type="hidden" name="event_id" value="<?php echo (int) $selectedEventId; ?>">
-                                            <button type="submit">Delete</button>
-                                        </form>
-                                    </td>
-                                </tr>
-                            <?php endforeach; ?>
-                        </tbody>
-                    </table>
-                <?php else: ?>
-                    <p>No schedules have been added for this event yet.</p>
-                <?php endif; ?>
-            <?php else: ?>
-                <p>Select an event from the list above to start adding schedules.</p>
-            <?php endif; ?>
+            <p><a href="/admin/event_schedule.php">Manage event schedules from a dedicated page</a></p>
 
             <h3>Events List</h3>
             <?php if (!empty($events)): ?>

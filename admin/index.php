@@ -284,6 +284,8 @@ $eventTypeOptions = ['Academic','Cultural','Sports','Seminar','Workshop','Confer
 				</form>
 			</div>
 
+			<p><a href="/admin/event_schedule.php">Manage event schedules</a></p>
+
 			<?php include __DIR__ . '/events.php'; ?>
 		<?php endif; ?>
 

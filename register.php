@@ -40,10 +40,40 @@ SQL);
 
 function getActiveEvent(PDO $pdo): ?array
 {
-    $statement = $pdo->prepare('SELECT * FROM events WHERE registration_required = 1 AND start_date >= CURDATE() ORDER BY start_date ASC LIMIT 1');
+    $statement = $pdo->prepare(<<<'SQL'
+        SELECT e.*
+        FROM events e
+        WHERE e.registration_required = 1
+          AND e.start_date >= CURDATE()
+          AND EXISTS (
+              SELECT 1
+              FROM event_schedules es
+              WHERE es.event_id = e.event_id
+                AND es.schedule_start_date <= CURDATE()
+                AND (es.schedule_end_date IS NULL OR es.schedule_end_date >= CURDATE())
+          )
+        ORDER BY e.start_date ASC, e.event_id ASC
+        LIMIT 1
+SQL);
     $statement->execute();
     $event = $statement->fetch();
     return $event ?: null;
+}
+
+function getEventScheduleForToday(PDO $pdo, int $eventId): ?array
+{
+    $statement = $pdo->prepare(<<<'SQL'
+        SELECT *
+        FROM event_schedules
+        WHERE event_id = :event_id
+          AND schedule_start_date <= CURDATE()
+          AND (schedule_end_date IS NULL OR schedule_end_date >= CURDATE())
+        ORDER BY schedule_start_date ASC, schedule_id ASC
+        LIMIT 1
+SQL);
+    $statement->execute([':event_id' => $eventId]);
+    $schedule = $statement->fetch();
+    return $schedule ?: null;
 }
 
 function saveEventRegistration(PDO $pdo, array $data): int
@@ -92,6 +122,7 @@ SQL);
 
 $pdo = null;
 $event = null;
+$eventSchedule = null;
 $errorMessage = '';
 $successMessage = '';
 
@@ -99,6 +130,9 @@ try {
     $pdo = createDbConnection();
     ensureEventRegistrationsTable($pdo);
     $event = getActiveEvent($pdo);
+    if ($event) {
+        $eventSchedule = getEventScheduleForToday($pdo, (int) $event['event_id']);
+    }
 } catch (PDOException $exception) {
     $errorMessage = 'Database error: ' . $exception->getMessage();
 }
@@ -157,7 +191,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 <p><strong>Description:</strong> <?php echo htmlspecialchars((string) ($event['event_description'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></p>
             </div>
         <?php else: ?>
-            <div class="alert error">No active event is currently available for registration.</div>
+            <div class="alert error">
+                Registration is currently closed for this event.
+                <?php if (!empty($eventSchedule)): ?>
+                    The active schedule is from <?php echo htmlspecialchars((string) ($eventSchedule['schedule_start_date'] ?? ''), ENT_QUOTES, 'UTF-8'); ?> to <?php echo htmlspecialchars((string) ($eventSchedule['schedule_end_date'] ?? 'ongoing'), ENT_QUOTES, 'UTF-8'); ?>.
+                <?php else: ?>
+                    No valid registration schedule is available for today.
+                <?php endif; ?>
+            </div>
         <?php endif; ?>
 
         <?php if ($event): ?>
