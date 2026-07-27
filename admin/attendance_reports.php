@@ -48,6 +48,7 @@ function getAttendanceRows(PDO $pdo, int $eventId, string $sortColumn, string $s
             er.name,
             er.designation,
             er.institution_name,
+            er.institution_level,
             er.district,
             er.city,
             er.state,
@@ -73,17 +74,122 @@ SQL);
 
 function getReportTypeLabel(string $reportType): string
 {
-    return $reportType === 'summary' ? 'Attendance Summary' : 'Facilitation Report';
+    return match ($reportType) {
+        'summary' => 'Attendance Summary',
+        'event_summary' => 'Summary Event Attendance',
+        default => 'Facilitation Report',
+    };
 }
 
 function getReportTitle(string $reportType): string
 {
-    return $reportType === 'summary' ? 'Attendance Summary Report' : 'Facilitation Report';
+    return match ($reportType) {
+        'summary' => 'Attendance Summary Report',
+        'event_summary' => 'Summary Event Attendance Report',
+        default => 'Facilitation Report',
+    };
+}
+
+function normalizeInstitutionLevel(string $value): string
+{
+    $normalized = trim(strtolower($value));
+    if ($normalized === '') {
+        return 'Not specified';
+    }
+
+    if (str_contains($normalized, 'senior secondary') || str_contains($normalized, 'senior sec') || str_contains($normalized, 'sr. secondary')) {
+        return 'Senior Secondary';
+    }
+
+    if (str_contains($normalized, 'higher secondary') || str_contains($normalized, 'higher sec')) {
+        return 'Higher Secondary';
+    }
+
+    if (str_contains($normalized, 'secondary')) {
+        return 'Secondary';
+    }
+
+    if (str_contains($normalized, 'primary')) {
+        return 'Primary';
+    }
+
+    if (str_contains($normalized, 'college') || str_contains($normalized, 'university')) {
+        return 'College/University';
+    }
+
+    if (str_contains($normalized, 'school')) {
+        return 'School';
+    }
+
+    return ucwords($value);
+}
+
+function normalizeRoleCategory(string $value): string
+{
+    $normalized = trim(strtolower($value));
+    if ($normalized === '') {
+        return 'Other';
+    }
+
+    if (preg_match('/principal|headmaster|head teacher|director/i', $normalized)) {
+        return 'Principal';
+    }
+
+    if (preg_match('/teacher|lecturer|faculty|educator|trainer/i', $normalized)) {
+        return 'Teacher';
+    }
+
+    if (preg_match('/coordinator|administrator|manager|supervisor|hod|head/i', $normalized)) {
+        return 'Administrator/Coordinator';
+    }
+
+    return 'Other';
+}
+
+function buildSummaryData(array $rows): array
+{
+    $districts = [];
+    $institutionLevels = [];
+    $roleCategories = [];
+
+    foreach ($rows as $row) {
+        $district = trim((string) ($row['district'] ?? '')) !== '' ? trim((string) ($row['district'] ?? '')) : 'Not specified';
+        $districts[$district] = ($districts[$district] ?? 0) + 1;
+
+        $institutionLevel = normalizeInstitutionLevel((string) ($row['institution_level'] ?? ''));
+        $institutionLevels[$institutionLevel] = ($institutionLevels[$institutionLevel] ?? 0) + 1;
+
+        $roleCategory = normalizeRoleCategory((string) ($row['designation'] ?? ''));
+        $roleCategories[$roleCategory] = ($roleCategories[$roleCategory] ?? 0) + 1;
+    }
+
+    ksort($districts);
+    ksort($institutionLevels);
+    ksort($roleCategories);
+
+    return [
+        'total_attendees' => count($rows),
+        'districts' => $districts,
+        'institution_levels' => $institutionLevels,
+        'role_categories' => $roleCategories,
+    ];
 }
 
 function escapeXml(string $value): string
 {
     return htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+}
+
+function filterRowsByExcludedIds(array $rows, array $excludedIds): array
+{
+    if ($excludedIds === []) {
+        return $rows;
+    }
+
+    $excluded = array_map('intval', $excludedIds);
+    return array_values(array_filter($rows, static function (array $row) use ($excluded): bool {
+        return !in_array((int) ($row['registration_id'] ?? 0), $excluded, true);
+    }));
 }
 
 function buildDocx(string $reportType, array $event, array $rows): string
@@ -131,6 +237,21 @@ XML);
             $paragraphs[] = '<w:p><w:r><w:t>Institute: ' . escapeXml((string) ($row['institution_name'] ?? '')) . '</w:t></w:r></w:p>';
             $paragraphs[] = '<w:p><w:r><w:t>District: ' . escapeXml((string) ($row['district'] ?? '')) . '</w:t></w:r></w:p>';
             $paragraphs[] = '<w:p><w:r><w:t></w:t></w:r></w:p>';
+        }
+    } elseif ($reportType === 'event_summary') {
+        $summaryData = buildSummaryData($rows);
+        $paragraphs[] = '<w:p><w:r><w:t>Total attendees: ' . escapeXml((string) $summaryData['total_attendees']) . '</w:t></w:r></w:p>';
+        $paragraphs[] = '<w:p><w:r><w:t>By district:</w:t></w:r></w:p>';
+        foreach ($summaryData['districts'] as $district => $count) {
+            $paragraphs[] = '<w:p><w:r><w:t>- ' . escapeXml($district) . ': ' . escapeXml((string) $count) . '</w:t></w:r></w:p>';
+        }
+        $paragraphs[] = '<w:p><w:r><w:t>By institution level:</w:t></w:r></w:p>';
+        foreach ($summaryData['institution_levels'] as $level => $count) {
+            $paragraphs[] = '<w:p><w:r><w:t>- ' . escapeXml($level) . ': ' . escapeXml((string) $count) . '</w:t></w:r></w:p>';
+        }
+        $paragraphs[] = '<w:p><w:r><w:t>By role category:</w:t></w:r></w:p>';
+        foreach ($summaryData['role_categories'] as $role => $count) {
+            $paragraphs[] = '<w:p><w:r><w:t>- ' . escapeXml($role) . ': ' . escapeXml((string) $count) . '</w:t></w:r></w:p>';
         }
     } else {
         foreach ($rows as $row) {
@@ -194,6 +315,8 @@ $rows = [];
 $event = null;
 $adminError = '';
 $adminSuccess = '';
+$excludedIds = [];
+$summaryData = [];
 
 try {
     $pdo = createDbConnection();
@@ -203,34 +326,52 @@ try {
 }
 
 if ($pdo !== null) {
-    if (isset($_GET['event']) && (int) $_GET['event'] > 0) {
-        $selectedEventId = (int) $_GET['event'];
+    $requestEvent = (int) ($_GET['event'] ?? $_POST['event'] ?? 0);
+    $requestReport = (string) ($_GET['report'] ?? $_POST['report'] ?? 'facilitation');
+    $requestSort = (string) ($_GET['sort'] ?? $_POST['sort'] ?? 'name');
+    $requestOrder = (string) ($_GET['order'] ?? $_POST['order'] ?? 'asc');
+
+    if ($requestEvent > 0) {
+        $selectedEventId = $requestEvent;
     } elseif (!empty($events)) {
         $selectedEventId = (int) $events[0]['event_id'];
     }
 
-    $reportType = in_array($_GET['report'] ?? 'facilitation', ['facilitation', 'summary'], true) ? (string) ($_GET['report'] ?? 'facilitation') : 'facilitation';
-    $sortColumn = in_array($_GET['sort'] ?? 'name', ['name', 'designation', 'institution', 'district', 'checked_in_at', 'mode'], true) ? (string) ($_GET['sort'] ?? 'name') : 'name';
-    $sortOrder = in_array($_GET['order'] ?? 'asc', ['asc', 'desc'], true) ? (string) ($_GET['order'] ?? 'asc') : 'asc';
+    $reportType = in_array($requestReport, ['facilitation', 'summary', 'event_summary'], true) ? $requestReport : 'facilitation';
+    $sortColumn = in_array($requestSort, ['name', 'designation', 'institution', 'district', 'checked_in_at', 'mode'], true) ? $requestSort : 'name';
+    $sortOrder = in_array($requestOrder, ['asc', 'desc'], true) ? $requestOrder : 'asc';
 
     if ($selectedEventId > 0) {
         $event = getEventById($pdo, $selectedEventId);
         $rows = getAttendanceRows($pdo, $selectedEventId, $sortColumn, $sortOrder);
+        $summaryData = $reportType === 'event_summary' ? buildSummaryData($rows) : [];
     }
 }
 
-if (isset($_GET['export']) && $_GET['export'] === 'docx' && $pdo !== null && $selectedEventId > 0 && $event !== null) {
-    try {
-        $tempFile = buildDocx($reportType, $event, $rows);
-        $filename = strtolower(str_replace(' ', '-', getReportTitle($reportType))) . '-' . $selectedEventId . '.docx';
-        header('Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document');
-        header('Content-Disposition: attachment; filename="' . $filename . '"');
-        header('Content-Length: ' . filesize($tempFile));
-        readfile($tempFile);
-        unlink($tempFile);
-        exit;
-    } catch (Throwable $exception) {
-        $adminError = 'Unable to export DOCX: ' . $exception->getMessage();
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($action = (string) ($_POST['action'] ?? '')) !== '') {
+    $excludedIds = array_map('intval', (array) ($_POST['exclude_ids'] ?? []));
+    $excludedIds = array_values(array_filter($excludedIds));
+
+    if ($selectedEventId > 0 && $event !== null && $pdo !== null) {
+        $rows = filterRowsByExcludedIds($rows, $excludedIds);
+        $summaryData = $reportType === 'event_summary' ? buildSummaryData($rows) : [];
+    }
+
+    if ($action === 'export_docx' && $pdo !== null && $selectedEventId > 0 && $event !== null) {
+        try {
+            $tempFile = buildDocx($reportType, $event, $rows);
+            $filename = strtolower(str_replace(' ', '-', getReportTitle($reportType))) . '-' . $selectedEventId . '.docx';
+            header('Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+            header('Content-Disposition: attachment; filename="' . $filename . '"');
+            header('Content-Length: ' . filesize($tempFile));
+            readfile($tempFile);
+            unlink($tempFile);
+            exit;
+        } catch (Throwable $exception) {
+            $adminError = 'Unable to export DOCX: ' . $exception->getMessage();
+        }
+    } elseif ($action === 'apply_filter') {
+        $adminSuccess = count($excludedIds) > 0 ? 'Removed ' . count($excludedIds) . ' attendee(s) from the report preview.' : 'No attendees were excluded.';
     }
 }
 ?>
@@ -277,6 +418,7 @@ if (isset($_GET['export']) && $_GET['export'] === 'docx' && $pdo !== null && $se
         <select id="report" name="report" onchange="this.form.submit()">
             <option value="facilitation" <?php echo $reportType === 'facilitation' ? 'selected' : ''; ?>>Facilitation Report</option>
             <option value="summary" <?php echo $reportType === 'summary' ? 'selected' : ''; ?>>Attendance Summary</option>
+            <option value="event_summary" <?php echo $reportType === 'event_summary' ? 'selected' : ''; ?>>Summary Event Attendance</option>
         </select>
 
         <input type="hidden" name="sort" value="<?php echo htmlspecialchars($sortColumn, ENT_QUOTES, 'UTF-8'); ?>">
@@ -285,48 +427,105 @@ if (isset($_GET['export']) && $_GET['export'] === 'docx' && $pdo !== null && $se
     </form>
 
     <?php if ($event !== null): ?>
-        <div class="summary">
+            <div class="summary">
             <strong><?php echo htmlspecialchars(getReportTitle($reportType), ENT_QUOTES, 'UTF-8'); ?></strong>
             <div><strong>Event:</strong> <?php echo htmlspecialchars((string) ($event['event_title'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></div>
             <div><strong>Date:</strong> <?php echo htmlspecialchars((string) (($event['start_date'] ?? '') . (!empty($event['end_date']) ? ' to ' . $event['end_date'] : '')), ENT_QUOTES, 'UTF-8'); ?></div>
             <div><strong>Venue:</strong> <?php echo htmlspecialchars((string) ($event['venue_name'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></div>
             <div><strong>Location:</strong> <?php echo htmlspecialchars(trim((string) (($event['city'] ?? '') . (!empty($event['state']) ? ', ' . $event['state'] : '') . (!empty($event['country']) ? ', ' . $event['country'] : ''))), ENT_QUOTES, 'UTF-8'); ?></div>
             <div class="toolbar" style="margin-top: 0.75rem;">
-                <a href="/admin/attendance_reports.php?event=<?php echo (int) $selectedEventId; ?>&report=<?php echo urlencode($reportType); ?>&sort=<?php echo urlencode($sortColumn); ?>&order=<?php echo urlencode($sortOrder); ?>&export=docx"><button type="button">Export DOCX</button></a>
                 <a href="/admin"><button type="button">Back to admin</button></a>
             </div>
         </div>
     <?php endif; ?>
 
+    <?php if ($event !== null && $reportType === 'event_summary' && !empty($rows)): ?>
+        <div class="summary">
+            <h3>Summary overview</h3>
+            <div><strong>Total attendees:</strong> <?php echo (int) ($summaryData['total_attendees'] ?? 0); ?></div>
+            <div><strong>Principals:</strong> <?php echo (int) ($summaryData['role_categories']['Principal'] ?? 0); ?></div>
+            <div><strong>Teachers:</strong> <?php echo (int) ($summaryData['role_categories']['Teacher'] ?? 0); ?></div>
+            <div><strong>Other roles:</strong> <?php echo (int) ($summaryData['role_categories']['Other'] ?? 0); ?></div>
+        </div>
+
+        <div class="summary">
+            <h3>Attendees by district</h3>
+            <table>
+                <thead><tr><th>District</th><th>Count</th></tr></thead>
+                <tbody>
+                    <?php foreach (($summaryData['districts'] ?? []) as $district => $count): ?>
+                        <tr><td><?php echo htmlspecialchars((string) $district, ENT_QUOTES, 'UTF-8'); ?></td><td><?php echo (int) $count; ?></td></tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="summary">
+            <h3>Attendees by institution level</h3>
+            <table>
+                <thead><tr><th>Institution level</th><th>Count</th></tr></thead>
+                <tbody>
+                    <?php foreach (($summaryData['institution_levels'] ?? []) as $level => $count): ?>
+                        <tr><td><?php echo htmlspecialchars((string) $level, ENT_QUOTES, 'UTF-8'); ?></td><td><?php echo (int) $count; ?></td></tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+
+        <div class="summary">
+            <h3>Attendees by role category</h3>
+            <table>
+                <thead><tr><th>Role category</th><th>Count</th></tr></thead>
+                <tbody>
+                    <?php foreach (($summaryData['role_categories'] ?? []) as $role => $count): ?>
+                        <tr><td><?php echo htmlspecialchars((string) $role, ENT_QUOTES, 'UTF-8'); ?></td><td><?php echo (int) $count; ?></td></tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </div>
+    <?php endif; ?>
+
     <?php if ($event !== null && !empty($rows)): ?>
-        <table>
-            <thead>
-                <tr>
-                    <th><a class="sort-link" href="/admin/attendance_reports.php?event=<?php echo (int) $selectedEventId; ?>&report=<?php echo urlencode($reportType); ?>&sort=name&order=<?php echo $sortColumn === 'name' && $sortOrder === 'asc' ? 'desc' : 'asc'; ?>">Name</a></th>
-                    <th><a class="sort-link" href="/admin/attendance_reports.php?event=<?php echo (int) $selectedEventId; ?>&report=<?php echo urlencode($reportType); ?>&sort=designation&order=<?php echo $sortColumn === 'designation' && $sortOrder === 'asc' ? 'desc' : 'asc'; ?>">Designation</a></th>
-                    <th><a class="sort-link" href="/admin/attendance_reports.php?event=<?php echo (int) $selectedEventId; ?>&report=<?php echo urlencode($reportType); ?>&sort=institution&order=<?php echo $sortColumn === 'institution' && $sortOrder === 'asc' ? 'desc' : 'asc'; ?>">Institute</a></th>
-                    <th><a class="sort-link" href="/admin/attendance_reports.php?event=<?php echo (int) $selectedEventId; ?>&report=<?php echo urlencode($reportType); ?>&sort=district&order=<?php echo $sortColumn === 'district' && $sortOrder === 'asc' ? 'desc' : 'asc'; ?>">District</a></th>
-                    <?php if ($reportType === 'summary'): ?>
-                        <th><a class="sort-link" href="/admin/attendance_reports.php?event=<?php echo (int) $selectedEventId; ?>&report=<?php echo urlencode($reportType); ?>&sort=checked_in_at&order=<?php echo $sortColumn === 'checked_in_at' && $sortOrder === 'asc' ? 'desc' : 'asc'; ?>">Checked In</a></th>
-                        <th><a class="sort-link" href="/admin/attendance_reports.php?event=<?php echo (int) $selectedEventId; ?>&report=<?php echo urlencode($reportType); ?>&sort=mode&order=<?php echo $sortColumn === 'mode' && $sortOrder === 'asc' ? 'desc' : 'asc'; ?>">Mode</a></th>
-                    <?php endif; ?>
-                </tr>
-            </thead>
-            <tbody>
-                <?php foreach ($rows as $row): ?>
+        <form method="post">
+            <input type="hidden" name="event" value="<?php echo (int) $selectedEventId; ?>">
+            <input type="hidden" name="report" value="<?php echo htmlspecialchars($reportType, ENT_QUOTES, 'UTF-8'); ?>">
+            <input type="hidden" name="sort" value="<?php echo htmlspecialchars($sortColumn, ENT_QUOTES, 'UTF-8'); ?>">
+            <input type="hidden" name="order" value="<?php echo htmlspecialchars($sortOrder, ENT_QUOTES, 'UTF-8'); ?>">
+            <div class="toolbar" style="margin-top: 0.75rem;">
+                <button type="submit" name="action" value="apply_filter">Remove selected attendees</button>
+                <button type="submit" name="action" value="export_docx">Export DOCX</button>
+            </div>
+            <table>
+                <thead>
                     <tr>
-                        <td><?php echo htmlspecialchars((string) ($row['name'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
-                        <td><?php echo htmlspecialchars((string) ($row['designation'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
-                        <td><?php echo htmlspecialchars((string) ($row['institution_name'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
-                        <td><?php echo htmlspecialchars((string) ($row['district'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
+                        <th>Exclude</th>
+                        <th><a class="sort-link" href="/admin/attendance_reports.php?event=<?php echo (int) $selectedEventId; ?>&report=<?php echo urlencode($reportType); ?>&sort=name&order=<?php echo $sortColumn === 'name' && $sortOrder === 'asc' ? 'desc' : 'asc'; ?>">Name</a></th>
+                        <th><a class="sort-link" href="/admin/attendance_reports.php?event=<?php echo (int) $selectedEventId; ?>&report=<?php echo urlencode($reportType); ?>&sort=designation&order=<?php echo $sortColumn === 'designation' && $sortOrder === 'asc' ? 'desc' : 'asc'; ?>">Designation</a></th>
+                        <th><a class="sort-link" href="/admin/attendance_reports.php?event=<?php echo (int) $selectedEventId; ?>&report=<?php echo urlencode($reportType); ?>&sort=institution&order=<?php echo $sortColumn === 'institution' && $sortOrder === 'asc' ? 'desc' : 'asc'; ?>">Institute</a></th>
+                        <th><a class="sort-link" href="/admin/attendance_reports.php?event=<?php echo (int) $selectedEventId; ?>&report=<?php echo urlencode($reportType); ?>&sort=district&order=<?php echo $sortColumn === 'district' && $sortOrder === 'asc' ? 'desc' : 'asc'; ?>">District</a></th>
                         <?php if ($reportType === 'summary'): ?>
-                            <td><?php echo htmlspecialchars((string) ($row['checked_in_at'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
-                            <td><?php echo htmlspecialchars((string) ($row['mode'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
+                            <th><a class="sort-link" href="/admin/attendance_reports.php?event=<?php echo (int) $selectedEventId; ?>&report=<?php echo urlencode($reportType); ?>&sort=checked_in_at&order=<?php echo $sortColumn === 'checked_in_at' && $sortOrder === 'asc' ? 'desc' : 'asc'; ?>">Checked In</a></th>
+                            <th><a class="sort-link" href="/admin/attendance_reports.php?event=<?php echo (int) $selectedEventId; ?>&report=<?php echo urlencode($reportType); ?>&sort=mode&order=<?php echo $sortColumn === 'mode' && $sortOrder === 'asc' ? 'desc' : 'asc'; ?>">Mode</a></th>
                         <?php endif; ?>
                     </tr>
-                <?php endforeach; ?>
-            </tbody>
-        </table>
+                </thead>
+                <tbody>
+                    <?php foreach ($rows as $row): ?>
+                        <tr>
+                            <td><input type="checkbox" name="exclude_ids[]" value="<?php echo (int) ($row['registration_id'] ?? 0); ?>"></td>
+                            <td><?php echo htmlspecialchars((string) ($row['name'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
+                            <td><?php echo htmlspecialchars((string) ($row['designation'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
+                            <td><?php echo htmlspecialchars((string) ($row['institution_name'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
+                            <td><?php echo htmlspecialchars((string) ($row['district'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
+                            <?php if ($reportType === 'summary'): ?>
+                                <td><?php echo htmlspecialchars((string) ($row['checked_in_at'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
+                                <td><?php echo htmlspecialchars((string) ($row['mode'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
+                            <?php endif; ?>
+                        </tr>
+                    <?php endforeach; ?>
+                </tbody>
+            </table>
+        </form>
     <?php elseif ($event !== null): ?>
         <p class="muted">No attendee records are available for the selected event yet.</p>
     <?php endif; ?>
