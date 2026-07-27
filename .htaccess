@@ -1,9 +1,11 @@
 RewriteEngine On
+DirectorySlash Off
+
+# Route clean URLs for admin and register to their PHP front controllers
+RewriteRule ^admin/?$ /admin/index.php [L,QSA,NC]
+RewriteRule ^register/?$ /register.php [L,QSA,NC]
+
 # If the request is already for an existing file or directory, serve it directly
 RewriteCond %{REQUEST_FILENAME} -f [OR]
 RewriteCond %{REQUEST_FILENAME} -d
 RewriteRule ^ - [L]
-
-# Route clean URLs for admin and register to their PHP front controllers
-RewriteRule ^admin/?$ admin/index.php [L,QSA]
-RewriteRule ^register/?$ register.php [L,QSA]
