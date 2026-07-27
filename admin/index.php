@@ -292,6 +292,7 @@ $eventTypeOptions = ['Academic','Cultural','Sports','Seminar','Workshop','Confer
 			<p><a href="/admin/broadcast_messages.php">Send common messages to all registered users</a></p>
 			<p><a href="/admin/event_checkin.php">Event Attendance / Event Check-in</a></p>
 			<p><a href="/admin/attendance_view.php" target="_blank">Live Attendance View</a></p>
+			<p><a href="/admin/attendance_reports.php">Attendance Reports</a></p>
 
 			<?php include __DIR__ . '/events.php'; ?>
 		<?php endif; ?>
