@@ -32,6 +32,23 @@ function ensureEventsTable(PDO $pdo): void
         )
 SQL
     );
+
+    $pdo->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS event_schedules (
+            schedule_id INT AUTO_INCREMENT PRIMARY KEY,
+            event_id INT NOT NULL,
+            schedule_start_date DATE NOT NULL,
+            schedule_end_date DATE,
+            schedule_description TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            CONSTRAINT fk_event_schedules_event
+                FOREIGN KEY (event_id) REFERENCES events(event_id)
+                ON DELETE CASCADE
+                ON UPDATE CASCADE
+        )
+SQL
+    );
 }
 
 function getAllEvents(PDO $pdo): array
@@ -46,6 +63,61 @@ function getEventById(PDO $pdo, int $eventId): ?array
     $statement->execute([':event_id' => $eventId]);
     $event = $statement->fetch();
     return $event ?: null;
+}
+
+function getEventSchedulesByEventId(PDO $pdo, int $eventId): array
+{
+    $statement = $pdo->prepare('SELECT * FROM event_schedules WHERE event_id = :event_id ORDER BY schedule_start_date ASC, schedule_end_date ASC, schedule_id ASC');
+    $statement->execute([':event_id' => $eventId]);
+    return $statement->fetchAll() ?: [];
+}
+
+function getEventScheduleById(PDO $pdo, int $scheduleId): ?array
+{
+    $statement = $pdo->prepare('SELECT * FROM event_schedules WHERE schedule_id = :schedule_id LIMIT 1');
+    $statement->execute([':schedule_id' => $scheduleId]);
+    $schedule = $statement->fetch();
+    return $schedule ?: null;
+}
+
+function saveEventSchedule(PDO $pdo, array $data): int
+{
+    $scheduleId = (int) ($data['schedule_id'] ?? 0);
+    $eventId = (int) ($data['event_id'] ?? 0);
+    $scheduleStartDate = trim((string) ($data['schedule_start_date'] ?? ''));
+    $scheduleEndDate = trim((string) ($data['schedule_end_date'] ?? ''));
+    $scheduleDescription = trim((string) ($data['schedule_description'] ?? ''));
+
+    if ($eventId <= 0 || $scheduleStartDate === '') {
+        throw new InvalidArgumentException('Please select an event and provide a start date for the schedule.');
+    }
+
+    $payload = [
+        ':event_id' => $eventId,
+        ':schedule_start_date' => $scheduleStartDate,
+        ':schedule_end_date' => $scheduleEndDate === '' ? null : $scheduleEndDate,
+        ':schedule_description' => $scheduleDescription === '' ? null : $scheduleDescription,
+    ];
+
+    if ($scheduleId > 0) {
+        $payload[':schedule_id'] = $scheduleId;
+        $pdo->prepare(
+            'UPDATE event_schedules SET event_id = :event_id, schedule_start_date = :schedule_start_date, schedule_end_date = :schedule_end_date, schedule_description = :schedule_description WHERE schedule_id = :schedule_id'
+        )->execute($payload);
+        return $scheduleId;
+    }
+
+    $statement = $pdo->prepare(
+        'INSERT INTO event_schedules (event_id, schedule_start_date, schedule_end_date, schedule_description) VALUES (:event_id, :schedule_start_date, :schedule_end_date, :schedule_description)'
+    );
+    $statement->execute($payload);
+    return (int) $pdo->lastInsertId();
+}
+
+function deleteEventSchedule(PDO $pdo, int $scheduleId): void
+{
+    $statement = $pdo->prepare('DELETE FROM event_schedules WHERE schedule_id = :schedule_id');
+    $statement->execute([':schedule_id' => $scheduleId]);
 }
 
 function saveEvent(PDO $pdo, array $data): int

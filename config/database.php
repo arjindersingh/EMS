@@ -39,11 +39,11 @@ loadEnvFile(__DIR__ . '/../.env');
 function getDbConfig(): array
 {
     return [
-        'host' => getenv('DB_HOST') ?: 'mysql',
+        'host' => getenv('DB_HOST') ?: 'localhost',
         'port' => (int) (getenv('DB_PORT') ?: '3306'),
         'database' => getenv('DB_DATABASE') ?: 'ems_db',
-        'username' => getenv('DB_USERNAME') ?: 'ems_user',
-        'password' => getenv('DB_PASSWORD') ?: 'ems_password',
+        'username' => getenv('DB_USERNAME') ?: 'root',
+        'password' => getenv('DB_PASSWORD') ?: '',
     ];
 }
 
