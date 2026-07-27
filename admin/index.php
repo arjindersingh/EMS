@@ -289,6 +289,9 @@ $eventTypeOptions = ['Academic','Cultural','Sports','Seminar','Workshop','Confer
 			<p><a href="/admin/event_schedule.php">Manage event schedules</a></p>
 			<p><a href="/admin/settings.php">Manage project settings</a></p>
 			<p><a href="/admin/qr_codes.php">Manage QR codes for registrations</a></p>
+			<p><a href="/admin/broadcast_messages.php">Send common messages to all registered users</a></p>
+			<p><a href="/admin/event_checkin.php">Event Attendance / Event Check-in</a></p>
+			<p><a href="/admin/attendance_view.php" target="_blank">Live Attendance View</a></p>
 
 			<?php include __DIR__ . '/events.php'; ?>
 		<?php endif; ?>

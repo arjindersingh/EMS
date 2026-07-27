@@ -28,6 +28,27 @@ unset($_SESSION['admin_success']);
 try {
     $pdo = createDbConnection();
     ensureSettingsTable($pdo);
+    $attendanceViewDefaults = [
+        ['attendance_view_enabled', 'boolean', '1'],
+        ['attendance_view_duration_seconds', 'number', '8'],
+        ['attendance_view_idle_seconds', 'number', '12'],
+        ['attendance_view_title', 'text', 'Welcome Attendee'],
+        ['attendance_view_message', 'text', 'Welcome to the event'],
+    ];
+
+    foreach ($attendanceViewDefaults as $default) {
+        [$name, $type, $value] = $default;
+        if (!getSettingByName($pdo, $name)) {
+            saveSetting($pdo, [
+                'setting_id' => 0,
+                'setting_name' => $name,
+                'setting_type' => $type,
+                'setting_value' => $value,
+                'setting_description' => 'Controls the live attendance display view.',
+            ]);
+        }
+    }
+
     $settings = getAllSettings($pdo);
 } catch (PDOException $exception) {
     $adminError = 'Database connection failed: ' . $exception->getMessage();
