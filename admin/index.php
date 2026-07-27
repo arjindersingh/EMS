@@ -64,6 +64,7 @@ unset($_SESSION['admin_error'], $_SESSION['admin_success']);
 
 // Load event helper functions (no side effects)
 require_once __DIR__ . '/events_funcs.php';
+require_once __DIR__ . '/settings_funcs.php';
 
 $pdo = null;
 $events = [];
@@ -93,6 +94,7 @@ $eventFormData = [
 try {
 	$pdo = createDbConnection();
 	ensureEventsTable($pdo);
+	ensureSettingsTable($pdo);
 	$events = getAllEvents($pdo);
 } catch (PDOException $exception) {
 	$adminError = $adminError !== '' ? $adminError : 'Database connection failed: ' . $exception->getMessage();
@@ -285,6 +287,8 @@ $eventTypeOptions = ['Academic','Cultural','Sports','Seminar','Workshop','Confer
 			</div>
 
 			<p><a href="/admin/event_schedule.php">Manage event schedules</a></p>
+			<p><a href="/admin/settings.php">Manage project settings</a></p>
+			<p><a href="/admin/qr_codes.php">Manage QR codes for registrations</a></p>
 
 			<?php include __DIR__ . '/events.php'; ?>
 		<?php endif; ?>

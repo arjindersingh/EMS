@@ -31,11 +31,20 @@ function ensureEventRegistrationsTable(PDO $pdo): void
             district VARCHAR(100),
             state VARCHAR(100),
             declaration_accepted TINYINT(1) DEFAULT 0,
+            qr_code_path VARCHAR(500),
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_event_id (event_id)
         )
 SQL);
+
+    try {
+        $pdo->exec("ALTER TABLE event_registrations ADD COLUMN qr_code_path VARCHAR(500)");
+    } catch (PDOException $exception) {
+        if (strpos($exception->getMessage(), 'Duplicate column name') === false && strpos($exception->getMessage(), 'already exists') === false) {
+            throw $exception;
+        }
+    }
 }
 
 function getActiveEvent(PDO $pdo): ?array
