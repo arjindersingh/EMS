@@ -1,0 +1,25 @@
+RewriteEngine On
+RewriteBase /ems/
+DirectorySlash Off
+
+# Serve the supported playback formats with explicit audio media types. This
+# prevents browsers from refusing uploaded tracks after a PHP/Apache upgrade.
+AddType audio/mpeg .mp3
+AddType audio/wav .wav
+AddType audio/ogg .ogg .opus
+AddType audio/mp4 .m4a
+AddType audio/flac .flac
+AddType audio/aac .aac
+AddType audio/webm .webm
+
+# Route clean URLs for admin and register to their PHP front controllers
+RewriteRule ^admin/?$ admin/index.php [L,QSA,NC]
+RewriteRule ^register/?$ register.php [L,QSA,NC]
+
+# Route /manage URLs to admin pages, keeping query strings
+RewriteRule ^manage(?:/(.*))?$ admin/$1 [L,QSA,NC]
+
+# If the request is already for an existing file or directory, serve it directly
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
