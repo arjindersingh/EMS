@@ -194,7 +194,8 @@ function formatEventPassHistorySummary(array $summary): string
         $parts[] = ucfirst($channel)
             . ': ' . ($entry['status'] === 'sent' ? 'Sent' : 'Failed')
             . ' (' . $entry['attempts'] . ')'
-            . ' @ ' . date('d M, y H:i', strtotime($entry['last_at']));
+            . ' @ ' . date('d M, y H:i', strtotime($entry['last_at']))
+            . ($channel === 'whatsapp' && $entry['details'] !== '' ? ' — ' . $entry['details'] : '');
     }
 
     return implode(' | ', $parts);
@@ -273,19 +274,30 @@ function buildQrFilePath(int $eventId, int $registrationId): string
     return ensureQrDirectory() . '/' . $eventId . '-' . $registrationId . '.png';
 }
 
+function isQrCodeWithinMaximumSize(string $path): bool
+{
+    $imageInfo = is_file($path) ? @getimagesize($path) : false;
+    return $imageInfo !== false && $imageInfo[0] <= 200 && $imageInfo[1] <= 200;
+}
+
 function generateQrCode(string $payload, string $outputPath): bool
 {
+    // Keep every generated pass QR within the 200 x 200 pixel limit.
+    $maxQrDimension = 200;
     $encodedPayload = urlencode($payload);
     $urls = [
-        'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' . $encodedPayload,
-        'https://chart.googleapis.com/chart?chs=300x300&cht=qr&chl=' . $encodedPayload,
+        'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' . $encodedPayload,
+        'https://chart.googleapis.com/chart?chs=200x200&cht=qr&chl=' . $encodedPayload,
     ];
 
     foreach ($urls as $url) {
         $contents = @file_get_contents($url);
         if ($contents !== false && $contents !== '') {
-            file_put_contents($outputPath, $contents);
-            return true;
+            $imageInfo = @getimagesizefromstring($contents);
+            if ($imageInfo !== false && $imageInfo[0] <= $maxQrDimension && $imageInfo[1] <= $maxQrDimension) {
+                file_put_contents($outputPath, $contents);
+                return true;
+            }
         }
     }
 
@@ -318,6 +330,16 @@ function createQrForRegistration(PDO $pdo, int $eventId, int $registrationId): ?
     $relativePath = '/assets/images/QR/' . basename($outputPath);
     saveQrCodePath($pdo, $registrationId, $relativePath);
     return $relativePath;
+}
+
+function ensureRegistrationQrCode(PDO $pdo, int $eventId, int $registrationId): ?string
+{
+    $qrPath = buildQrFilePath($eventId, $registrationId);
+    if (isQrCodeWithinMaximumSize($qrPath)) {
+        return '/assets/images/QR/' . basename($qrPath);
+    }
+
+    return createQrForRegistration($pdo, $eventId, $registrationId);
 }
 
 function readSmtpResponse($socket): array
@@ -507,7 +529,7 @@ function sendEmailWithAttachment(PDO $pdo, string $to, string $subject, string $
         . '<div style="max-width:600px;margin:24px auto;background:#ffffff;padding:28px;border-radius:12px;">'
         . '<div style="font-size:16px;line-height:1.6;">' . $safeMessage . '</div>'
         . '<div style="margin-top:24px;text-align:center;"><p style="font-weight:bold;">Your Event Pass</p>'
-        . '<img src="cid:' . $contentId . '" width="300" height="300" alt="Event Pass QR code" style="display:block;width:300px;max-width:100%;height:auto;margin:0 auto;border:8px solid #fff;">'
+        . '<img src="cid:' . $contentId . '" width="200" height="200" alt="Event Pass QR code" style="display:block;width:200px;max-width:100%;height:auto;margin:0 auto;border:8px solid #fff;">'
         . '<p style="color:#6b7280;font-size:13px;">Your Event Pass is also attached to this email.</p></div>'
         . '</div></body></html>';
 
@@ -655,8 +677,9 @@ function postHttpRequest(string $url, string $payload, string $contentType, ?str
     return $statusCode >= 200 && $statusCode < 300;
 }
 
-function sendWhatsappMessage(PDO $pdo, string $to, string $message): bool
+function sendWhatsappMessage(PDO $pdo, string $to, string $message, ?int &$responseCode = null): bool
 {
+    $responseCode = null;
     $apiUrl = trim((string) getSettingValue($pdo, 'whatsapp_api_url', ''));
     $recipient = normalizeWhatsappNumber($to);
     if ($apiUrl === '' || $recipient === '') {
@@ -680,6 +703,7 @@ function sendWhatsappMessage(PDO $pdo, string $to, string $message): bool
     $statusCode = null;
     $errorMessage = null;
     $sent = postForm($apiUrl, $payload, $responseBody, $statusCode, $errorMessage);
+    $responseCode = $statusCode;
 
     if (!$sent) {
         error_log('WhatsApp send failure: status=' . ($statusCode ?? 'unknown') . ' error=' . ($errorMessage ?? 'none') . ' response=' . substr((string) $responseBody, 0, 1000));
@@ -779,12 +803,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ? $candidateName . ' (#' . $registrationId . ')'
                 : 'Registration #' . $registrationId;
             $qrPath = buildQrFilePath($eventId, $registrationId);
-            if (!is_file($qrPath)) {
-                $created = createQrForRegistration($pdo, $eventId, $registrationId);
-                if ($created === null) {
-                    $emailErrors[] = $candidateLabel . ': Event Pass generation failed. Check internet access and QR service availability.';
-                    continue;
-                }
+            if (ensureRegistrationQrCode($pdo, $eventId, $registrationId) === null) {
+                $emailErrors[] = $candidateLabel . ': Event Pass generation failed. Check internet access and QR service availability.';
+                continue;
             }
             $to = trim((string) ($registration['official_email'] ?? ''));
             if (!filter_var($to, FILTER_VALIDATE_EMAIL)) {
@@ -887,25 +908,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $registrationId = (int) $registration['registration_id'];
             $passCode = getOrCreatePassCode($pdo, $eventId, $registrationId);
             $qrPath = buildQrFilePath($eventId, $registrationId);
-            if (!is_file($qrPath)) {
-                $created = createQrForRegistration($pdo, $eventId, $registrationId);
-                if ($created === null) {
-                    $whatsappErrors[] = 'Registration #' . $registrationId . ': Event Pass generation failed.';
-                    recordEventPassHistory($pdo, [
-                        'event_id' => $eventId,
-                        'registration_id' => $registrationId,
-                        'channel' => 'whatsapp',
-                        'recipient' => trim((string) ($registration['whatsapp_number'] ?? '')),
-                        'status' => 'failed',
-                        'details' => 'Event Pass generation failed',
-                        'message' => $messageBody,
-                        'qr_path' => null,
-                        'pass_code' => $passCode,
-                        'sent_by_user_id' => $_SESSION['admin_user_id'] ?? null,
-                        'sent_by_username' => $_SESSION['admin_username'] ?? null,
-                    ]);
-                    continue;
-                }
+            if (ensureRegistrationQrCode($pdo, $eventId, $registrationId) === null) {
+                $whatsappErrors[] = 'Registration #' . $registrationId . ': Event Pass generation failed.';
+                recordEventPassHistory($pdo, [
+                    'event_id' => $eventId,
+                    'registration_id' => $registrationId,
+                    'channel' => 'whatsapp',
+                    'recipient' => trim((string) ($registration['whatsapp_number'] ?? '')),
+                    'status' => 'failed',
+                    'details' => 'Event Pass generation failed',
+                    'message' => $messageBody,
+                    'qr_path' => null,
+                    'pass_code' => $passCode,
+                    'sent_by_user_id' => $_SESSION['admin_user_id'] ?? null,
+                    'sent_by_username' => $_SESSION['admin_username'] ?? null,
+                ]);
+                continue;
             }
             $to = normalizeWhatsappNumber(trim((string) ($registration['whatsapp_number'] ?? $registration['mobile'] ?? '')));
             if ($to === '') {
@@ -926,7 +944,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 continue;
             }
             $body = $messageBody . "\n\nPass Code: " . $passCode;
-            if (sendWhatsappMessage($pdo, $to, $body)) {
+            $whatsappResponseCode = null;
+            if (sendWhatsappMessage($pdo, $to, $body, $whatsappResponseCode)) {
                 $sent++;
                 recordEventPassHistory($pdo, [
                     'event_id' => $eventId,
@@ -934,7 +953,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'channel' => 'whatsapp',
                     'recipient' => $to,
                     'status' => 'sent',
-                    'details' => 'WhatsApp delivered successfully.',
+                    'details' => 'WhatsApp delivered successfully. HTTP ' . ($whatsappResponseCode ?? 'unknown'),
                     'message' => $body,
                     'qr_path' => $qrPath,
                     'pass_code' => $passCode,
@@ -942,14 +961,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'sent_by_username' => $_SESSION['admin_username'] ?? null,
                 ]);
             } else {
-                $whatsappErrors[] = 'Registration #' . $registrationId . ': WhatsApp send failed. Check WhatsApp settings and internet access.';
+                $responseLabel = $whatsappResponseCode !== null ? (string) $whatsappResponseCode : 'unavailable';
+                $whatsappErrors[] = 'Registration #' . $registrationId . ': WhatsApp send failed (response code: ' . $responseLabel . ').';
                 recordEventPassHistory($pdo, [
                     'event_id' => $eventId,
                     'registration_id' => $registrationId,
                     'channel' => 'whatsapp',
                     'recipient' => $to,
                     'status' => 'failed',
-                    'details' => 'WhatsApp API send failed',
+                    'details' => 'WhatsApp API send failed. HTTP ' . $responseLabel,
                     'message' => $body,
                     'qr_path' => $qrPath,
                     'pass_code' => $passCode,
