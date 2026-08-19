@@ -204,16 +204,17 @@ function formatEventPassHistorySummary(array $summary): string
 function ensureQrSettings(PDO $pdo): void
 {
     $defaults = [
+        ['portal_base_url', 'text', '', 'Public HTTPS base URL for the attendee portal, including the application path when applicable (for example, https://events.example.com/ems).'],
         ['whatsapp_api_url', 'text', ''],
         ['whatsapp_username', 'text', ''],
         ['whatsapp_password', 'text', ''],
         ['whatsapp_sender', 'text', ''],
-        ['whatsapp_template_name', 'text', '', 'WhatsApp template text used for the provider API text field.'],
+        ['whatsapp_template_name', 'text', '', 'Approved WhatsApp template name sent in the provider API text field.'],
         ['whatsapp_priority', 'text', 'wa', 'WhatsApp message priority parameter.'],
         ['whatsapp_stype', 'text', 'normal', 'WhatsApp message type parameter.'],
-        ['whatsapp_params', 'text', '', 'Additional WhatsApp Params field.'],
+        ['whatsapp_params', 'text', '', 'Optional comma-separated template values in the exact order approved by WhatsApp. Supports {{name}}, {{event_title}}, {{pass_code}}, and {{message}}.'],
         ['whatsapp_htype', 'text', 'image', 'WhatsApp htype parameter.'],
-        ['whatsapp_image_url', 'text', '', 'URL of the image to include with WhatsApp messages.'],
+        ['whatsapp_image_url', 'text', '', 'Fallback media URL for WhatsApp features other than Event Pass delivery.'],
         ['mail_from', 'text', ''],
         ['mail_host', 'text', ''],
         ['mail_username', 'text', ''],
@@ -223,14 +224,14 @@ function ensureQrSettings(PDO $pdo): void
     ];
 
     foreach ($defaults as $default) {
-        [$name, $type, $value] = $default;
+        [$name, $type, $value, $description] = array_pad($default, 4, 'Used by Event Pass delivery features.');
         if (!getSettingByName($pdo, $name)) {
             saveSetting($pdo, [
                 'setting_id' => 0,
                 'setting_name' => $name,
                 'setting_type' => $type,
                 'setting_value' => $value,
-                'setting_description' => 'Used by Event Pass delivery features.',
+                'setting_description' => $description,
             ]);
         }
     }
@@ -340,6 +341,101 @@ function ensureRegistrationQrCode(PDO $pdo, int $eventId, int $registrationId): 
     }
 
     return createQrForRegistration($pdo, $eventId, $registrationId);
+}
+
+function isPublicHttpsUrl(string $url, bool $allowQuery = false): bool
+{
+    $parts = parse_url($url);
+    if (!is_array($parts) || strtolower((string) ($parts['scheme'] ?? '')) !== 'https') {
+        return false;
+    }
+
+    $host = strtolower(trim((string) ($parts['host'] ?? '')));
+    if ($host === '' || in_array($host, ['localhost', 'localhost.localdomain'], true) || str_ends_with($host, '.local')) {
+        return false;
+    }
+
+    if (filter_var($host, FILTER_VALIDATE_IP) !== false) {
+        return filter_var($host, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE) !== false;
+    }
+
+    return !isset($parts['user'])
+        && !isset($parts['pass'])
+        && ($allowQuery || !isset($parts['query']))
+        && !isset($parts['fragment']);
+}
+
+function getPublicPortalBaseUrl(PDO $pdo): string
+{
+    $portalBaseUrl = trim((string) getSettingValue($pdo, 'portal_base_url', ''));
+    if ($portalBaseUrl === '') {
+        $portalBaseUrl = trim((string) (getenv('APP_BASE_URL') ?: ''));
+    }
+    if (isPublicHttpsUrl($portalBaseUrl)) {
+        return rtrim($portalBaseUrl, '/');
+    }
+
+    $forwardedProto = strtolower(trim(explode(',', (string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? ''))[0]));
+    $isHttpsRequest = $forwardedProto === 'https'
+        || (!empty($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off');
+    $requestHost = trim((string) ($_SERVER['HTTP_HOST'] ?? $_SERVER['SERVER_NAME'] ?? ''));
+    $requestBaseUrl = $isHttpsRequest && $requestHost !== '' ? 'https://' . $requestHost : '';
+
+    return isPublicHttpsUrl($requestBaseUrl) ? $requestBaseUrl : '';
+}
+
+function buildExternallyHostedEventPassQrUrl(int $eventId, int $registrationId): string
+{
+    return 'https://api.qrserver.com/v1/create-qr-code/?' . http_build_query([
+        'size' => '200x200',
+        'format' => 'png',
+        'data' => buildQrPayload($eventId, $registrationId),
+    ], '', '&', PHP_QUERY_RFC3986);
+}
+
+function buildPublicEventPassQrUrl(PDO $pdo, string $relativeQrPath, int $eventId, int $registrationId): string
+{
+    $portalBaseUrl = getPublicPortalBaseUrl($pdo);
+    if ($portalBaseUrl === '') {
+        // QR Server is already used above to generate the local pass image. Its public image URL
+        // lets the WhatsApp gateway fetch the same QR code when this app is running on localhost.
+        return buildExternallyHostedEventPassQrUrl($eventId, $registrationId);
+    }
+
+    $publicQrPath = buildUrl(ltrim($relativeQrPath, '/'));
+    $baseParts = parse_url($portalBaseUrl);
+    if (!is_array($baseParts)) {
+        return buildExternallyHostedEventPassQrUrl($eventId, $registrationId);
+    }
+
+    $origin = 'https://' . $baseParts['host'] . (isset($baseParts['port']) ? ':' . $baseParts['port'] : '');
+    $configuredPath = rtrim((string) ($baseParts['path'] ?? ''), '/');
+    if ($configuredPath !== '' && str_starts_with($publicQrPath . '/', $configuredPath . '/')) {
+        return $origin . $publicQrPath;
+    }
+
+    return rtrim($portalBaseUrl, '/') . '/' . ltrim($publicQrPath, '/');
+}
+
+function formatWhatsappTemplateParameter(string $value): string
+{
+    $value = preg_replace('/[\r\n,]+/', ' ', $value) ?? '';
+    return trim(preg_replace('/\s+/', ' ', $value) ?? '');
+}
+
+function buildEventPassWhatsappParams(PDO $pdo, array $registration, string $passCode, string $message): string
+{
+    $configuredParams = trim((string) getSettingValue($pdo, 'whatsapp_params', ''));
+    if ($configuredParams === '') {
+        return '';
+    }
+
+    return strtr($configuredParams, [
+        '{{name}}' => formatWhatsappTemplateParameter((string) ($registration['name'] ?? '')),
+        '{{event_title}}' => formatWhatsappTemplateParameter((string) ($registration['event_title'] ?? '')),
+        '{{pass_code}}' => formatWhatsappTemplateParameter($passCode),
+        '{{message}}' => formatWhatsappTemplateParameter($message),
+    ]);
 }
 
 function readSmtpResponse($socket): array
@@ -619,48 +715,55 @@ function normalizeWhatsappNumber(string $number): string
         : $normalized;
 }
 
-function postJson(string $url, array $payload, ?string &$responseBody = null, ?int &$statusCode = null, ?string &$errorMessage = null): bool
+function buildWhatsappApiUrl(string $apiUrl, array $payload): string
 {
-    $encodedPayload = json_encode($payload);
-    if ($encodedPayload === false) {
-        $errorMessage = 'Unable to encode WhatsApp payload.';
-        return false;
+    $query = http_build_query($payload, '', '&', PHP_QUERY_RFC3986);
+    if ($query === '') {
+        return $apiUrl;
     }
 
-    return postHttpRequest($url, $encodedPayload, 'application/json', $responseBody, $statusCode, $errorMessage);
+    $separator = str_contains($apiUrl, '?')
+        ? (str_ends_with($apiUrl, '?') || str_ends_with($apiUrl, '&') ? '' : '&')
+        : '?';
+
+    return $apiUrl . $separator . $query;
 }
 
-function postForm(string $url, array $payload, ?string &$responseBody = null, ?int &$statusCode = null, ?string &$errorMessage = null): bool
+function getHttpRequest(string $url, ?string &$responseBody = null, ?int &$statusCode = null, ?string &$errorMessage = null): bool
 {
-    $encodedPayload = http_build_query($payload);
-    return postHttpRequest($url, $encodedPayload, 'application/x-www-form-urlencoded', $responseBody, $statusCode, $errorMessage);
-}
+    $responseBody = null;
+    $statusCode = null;
+    $errorMessage = null;
 
-function postHttpRequest(string $url, string $payload, string $contentType, ?string &$responseBody = null, ?int &$statusCode = null, ?string &$errorMessage = null): bool
-{
     if (function_exists('curl_init')) {
         $ch = curl_init($url);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: ' . $contentType]);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
-        $responseBody = (string) curl_exec($ch);
+        curl_setopt_array($ch, [
+            CURLOPT_HTTPGET => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 30,
+            CURLOPT_HTTPHEADER => ['Accept: text/plain, application/json'],
+        ]);
+        $result = curl_exec($ch);
         $statusCode = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $errorMessage = curl_error($ch);
         curl_close($ch);
+
+        $responseBody = $result === false ? '' : (string) $result;
         return $errorMessage === '' && $statusCode >= 200 && $statusCode < 300;
     }
 
     $context = stream_context_create([
         'http' => [
-            'method' => 'POST',
-            'header' => 'Content-Type: ' . $contentType,
-            'content' => $payload,
+            'method' => 'GET',
+            'header' => 'Accept: text/plain, application/json',
+            'timeout' => 30,
+            'ignore_errors' => true,
         ],
     ]);
 
-    $responseBody = @file_get_contents($url, false, $context);
+    $result = @file_get_contents($url, false, $context);
+    $responseBody = $result === false ? '' : (string) $result;
     $statusCode = 0;
     if (isset($http_response_header[0])) {
         preg_match('/\s(\d{3})\s/', $http_response_header[0], $matches);
@@ -669,7 +772,7 @@ function postHttpRequest(string $url, string $payload, string $contentType, ?str
         }
     }
 
-    if ($responseBody === false) {
+    if ($result === false) {
         $errorMessage = 'HTTP request failed';
         return false;
     }
@@ -677,36 +780,120 @@ function postHttpRequest(string $url, string $payload, string $contentType, ?str
     return $statusCode >= 200 && $statusCode < 300;
 }
 
-function sendWhatsappMessage(PDO $pdo, string $to, string $message, ?int &$responseCode = null): bool
+function compactWhatsappGatewayResponse(?string $responseBody): string
+{
+    $response = trim(strip_tags((string) $responseBody));
+    $response = preg_replace('/\s+/', ' ', $response) ?? '';
+    return substr($response, 0, 300);
+}
+
+function getWhatsappGatewayResponseError(?string $responseBody): string
+{
+    $summary = compactWhatsappGatewayResponse($responseBody);
+    if ($summary === '') {
+        return 'The WhatsApp gateway returned an empty response.';
+    }
+
+    $decoded = json_decode($summary, true);
+    if (is_array($decoded)) {
+        foreach ($decoded as $key => $value) {
+            $key = strtolower((string) $key);
+            $normalizedValue = strtolower(trim(is_scalar($value) ? (string) $value : ''));
+
+            if ($key === 'success' && !in_array($normalizedValue, ['1', 'true', 'yes', 'success', 'sent', 'queued', 'accepted', 'ok'], true)) {
+                return 'Gateway rejected the request: ' . $summary;
+            }
+
+            if (in_array($key, ['status', 'status_code', 'statuscode', 'result'], true)
+                && in_array($normalizedValue, ['0', 'false', 'failed', 'failure', 'error', 'invalid', 'rejected', 'denied'], true)) {
+                return 'Gateway rejected the request: ' . $summary;
+            }
+
+            if (in_array($key, ['error', 'errors', 'error_message'], true)
+                && !in_array($normalizedValue, ['', '0', 'false', 'none', 'null'], true)) {
+                return 'Gateway rejected the request: ' . $summary;
+            }
+        }
+    }
+
+    $normalizedSummary = strtolower($summary);
+    if (in_array($normalizedSummary, ['0', 'false', 'error', 'failed', 'failure', 'invalid', 'rejected', 'denied'], true)
+        || preg_match('/\b(?:invalid|failed|failure|unauthori[sz]ed|denied|rejected|not\s+sent|insufficient)\b/i', $summary)) {
+        return 'Gateway rejected the request: ' . $summary;
+    }
+
+    return '';
+}
+
+function sendWhatsappEventPassMessage(
+    PDO $pdo,
+    string $to,
+    array $registration,
+    string $passCode,
+    string $message,
+    string $qrPublicUrl,
+    ?int &$responseCode = null,
+    ?string &$errorMessage = null
+): bool
 {
     $responseCode = null;
+    $errorMessage = null;
     $apiUrl = trim((string) getSettingValue($pdo, 'whatsapp_api_url', ''));
     $recipient = normalizeWhatsappNumber($to);
-    if ($apiUrl === '' || $recipient === '') {
+    $username = trim((string) getSettingValue($pdo, 'whatsapp_username', ''));
+    $password = trim((string) getSettingValue($pdo, 'whatsapp_password', ''));
+    $sender = trim((string) getSettingValue($pdo, 'whatsapp_sender', ''));
+    $templateName = trim((string) getSettingValue($pdo, 'whatsapp_template_name', ''));
+
+    if ($apiUrl === '' || $username === '' || $password === '' || $sender === '') {
+        $errorMessage = 'WhatsApp gateway URL, username, password, or sender ID is not configured.';
+        return false;
+    }
+    if ($templateName === '') {
+        $errorMessage = 'Set whatsapp_template_name to the approved WhatsApp template name before sending Event Passes.';
+        return false;
+    }
+    if (!preg_match('/^\d{10}$/', $recipient)) {
+        $errorMessage = 'The recipient must have a valid 10-digit Indian WhatsApp number without the 91 country code.';
+        return false;
+    }
+    if (!isPublicHttpsUrl($qrPublicUrl, true)) {
+        $errorMessage = 'The Event Pass QR URL must be a public HTTPS URL.';
         return false;
     }
 
     $payload = [
-        'user' => trim((string) getSettingValue($pdo, 'whatsapp_username', '')),
-        'pass' => trim((string) getSettingValue($pdo, 'whatsapp_password', '')),
-        'sender' => trim((string) getSettingValue($pdo, 'whatsapp_sender', '')),
+        'user' => $username,
+        'pass' => $password,
+        'sender' => $sender,
         'phone' => $recipient,
-        'text' => trim((string) getSettingValue($pdo, 'whatsapp_template_name', '')) ?: $message,
-        'priority' => trim((string) getSettingValue($pdo, 'whatsapp_priority', 'wa')),
-        'stype' => trim((string) getSettingValue($pdo, 'whatsapp_stype', 'normal')),
-        'Params' => trim((string) getSettingValue($pdo, 'whatsapp_params', '')),
-        'htype' => trim((string) getSettingValue($pdo, 'whatsapp_htype', 'image')),
-        'url' => trim((string) getSettingValue($pdo, 'whatsapp_image_url', '')),
+        'text' => $templateName,
+        'priority' => trim((string) getSettingValue($pdo, 'whatsapp_priority', 'wa')) ?: 'wa',
+        'stype' => trim((string) getSettingValue($pdo, 'whatsapp_stype', 'normal')) ?: 'normal',
     ];
+    $templateParams = buildEventPassWhatsappParams($pdo, $registration, $passCode, $message);
+    if ($templateParams !== '') {
+        $payload['Params'] = $templateParams;
+    }
+    $payload['htype'] = 'image';
+    $payload['url'] = $qrPublicUrl;
 
     $responseBody = null;
     $statusCode = null;
-    $errorMessage = null;
-    $sent = postForm($apiUrl, $payload, $responseBody, $statusCode, $errorMessage);
+    $requestUrl = buildWhatsappApiUrl($apiUrl, $payload);
+    $sent = getHttpRequest($requestUrl, $responseBody, $statusCode, $errorMessage);
     $responseCode = $statusCode;
 
+    if ($sent) {
+        $gatewayError = getWhatsappGatewayResponseError($responseBody);
+        if ($gatewayError !== '') {
+            $sent = false;
+            $errorMessage = $gatewayError;
+        }
+    }
+
     if (!$sent) {
-        error_log('WhatsApp send failure: status=' . ($statusCode ?? 'unknown') . ' error=' . ($errorMessage ?? 'none') . ' response=' . substr((string) $responseBody, 0, 1000));
+        error_log('WhatsApp Event Pass send failure: status=' . ($statusCode ?? 'unknown') . ' error=' . ($errorMessage ?? 'none') . ' response=' . compactWhatsappGatewayResponse($responseBody));
     }
 
     return $sent;
@@ -908,7 +1095,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $registrationId = (int) $registration['registration_id'];
             $passCode = getOrCreatePassCode($pdo, $eventId, $registrationId);
             $qrPath = buildQrFilePath($eventId, $registrationId);
-            if (ensureRegistrationQrCode($pdo, $eventId, $registrationId) === null) {
+            $body = $messageBody . "\n\nPass Code: " . $passCode;
+            $relativeQrPath = ensureRegistrationQrCode($pdo, $eventId, $registrationId);
+            if ($relativeQrPath === null) {
                 $whatsappErrors[] = 'Registration #' . $registrationId . ': Event Pass generation failed.';
                 recordEventPassHistory($pdo, [
                     'event_id' => $eventId,
@@ -917,7 +1106,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'recipient' => trim((string) ($registration['whatsapp_number'] ?? '')),
                     'status' => 'failed',
                     'details' => 'Event Pass generation failed',
-                    'message' => $messageBody,
+                    'message' => $body,
                     'qr_path' => null,
                     'pass_code' => $passCode,
                     'sent_by_user_id' => $_SESSION['admin_user_id'] ?? null,
@@ -925,7 +1114,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
                 continue;
             }
-            $to = normalizeWhatsappNumber(trim((string) ($registration['whatsapp_number'] ?? $registration['mobile'] ?? '')));
+            $rawWhatsappNumber = trim((string) ($registration['whatsapp_number'] ?? ''));
+            if ($rawWhatsappNumber === '') {
+                $rawWhatsappNumber = trim((string) ($registration['mobile'] ?? ''));
+            }
+            $to = normalizeWhatsappNumber($rawWhatsappNumber);
             if ($to === '') {
                 $whatsappErrors[] = 'Registration #' . $registrationId . ': WhatsApp number is missing.';
                 recordEventPassHistory($pdo, [
@@ -935,7 +1128,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'recipient' => $to,
                     'status' => 'failed',
                     'details' => 'Missing WhatsApp number',
-                    'message' => $messageBody,
+                    'message' => $body,
                     'qr_path' => $qrPath,
                     'pass_code' => $passCode,
                     'sent_by_user_id' => $_SESSION['admin_user_id'] ?? null,
@@ -943,9 +1136,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
                 continue;
             }
-            $body = $messageBody . "\n\nPass Code: " . $passCode;
+            $qrPublicUrl = buildPublicEventPassQrUrl($pdo, $relativeQrPath, $eventId, $registrationId);
+            if ($qrPublicUrl === '') {
+                $deliveryError = 'Unable to prepare a public QR image URL for WhatsApp delivery.';
+                $whatsappErrors[] = 'Registration #' . $registrationId . ': ' . $deliveryError;
+                recordEventPassHistory($pdo, [
+                    'event_id' => $eventId,
+                    'registration_id' => $registrationId,
+                    'channel' => 'whatsapp',
+                    'recipient' => $to,
+                    'status' => 'failed',
+                    'details' => $deliveryError,
+                    'message' => $body,
+                    'qr_path' => $qrPath,
+                    'pass_code' => $passCode,
+                    'sent_by_user_id' => $_SESSION['admin_user_id'] ?? null,
+                    'sent_by_username' => $_SESSION['admin_username'] ?? null,
+                ]);
+                continue;
+            }
             $whatsappResponseCode = null;
-            if (sendWhatsappMessage($pdo, $to, $body, $whatsappResponseCode)) {
+            $deliveryError = '';
+            if (sendWhatsappEventPassMessage($pdo, $to, $registration, $passCode, $body, $qrPublicUrl, $whatsappResponseCode, $deliveryError)) {
                 $sent++;
                 recordEventPassHistory($pdo, [
                     'event_id' => $eventId,
@@ -953,7 +1165,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'channel' => 'whatsapp',
                     'recipient' => $to,
                     'status' => 'sent',
-                    'details' => 'WhatsApp delivered successfully. HTTP ' . ($whatsappResponseCode ?? 'unknown'),
+                    'details' => 'WhatsApp gateway accepted the request. HTTP ' . ($whatsappResponseCode ?? 'unknown'),
                     'message' => $body,
                     'qr_path' => $qrPath,
                     'pass_code' => $passCode,
@@ -962,14 +1174,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
             } else {
                 $responseLabel = $whatsappResponseCode !== null ? (string) $whatsappResponseCode : 'unavailable';
-                $whatsappErrors[] = 'Registration #' . $registrationId . ': WhatsApp send failed (response code: ' . $responseLabel . ').';
+                $deliveryError = trim($deliveryError) ?: 'WhatsApp API request failed.';
+                $whatsappErrors[] = 'Registration #' . $registrationId . ': ' . $deliveryError . ' (response code: ' . $responseLabel . ').';
                 recordEventPassHistory($pdo, [
                     'event_id' => $eventId,
                     'registration_id' => $registrationId,
                     'channel' => 'whatsapp',
                     'recipient' => $to,
                     'status' => 'failed',
-                    'details' => 'WhatsApp API send failed. HTTP ' . $responseLabel,
+                    'details' => 'WhatsApp API send failed. HTTP ' . $responseLabel . ' — ' . $deliveryError,
                     'message' => $body,
                     'qr_path' => $qrPath,
                     'pass_code' => $passCode,

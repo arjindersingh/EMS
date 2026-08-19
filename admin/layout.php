@@ -40,6 +40,7 @@ function renderAdminLayout(string $pageTitle, string $content, array $pageData =
             'Administration' => [
                 ['admin_users', 'admin/admin_users.php', 'Admin Users'],
                 ['settings', 'admin/settings.php', 'Settings'],
+                ['registration_options', 'admin/registration_options.php', 'Registration Dropdown Options'],
                 ['playback', 'admin/playback.php', 'dPlayback'],
             ],
             'Pre' => [

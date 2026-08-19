@@ -41,15 +41,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $pdo->prepare("UPDATE special_registration_invitations SET status = 'sent', sent_at = NOW() WHERE invitation_id = :id")->execute([':id' => $invitation['invitation_id']]);
                 $_SESSION['admin_success'] = ucfirst(str_replace('send_', '', $action)) . ' registration link sent successfully.';
             } else $_SESSION['admin_error'] = 'The registration link was created, but delivery failed. ' . $deliveryError . ' Link: ' . $link;
-        } elseif ($action === 'add_option') {
-            $group = (string) ($_POST['option_group'] ?? ''); $value = trim((string) ($_POST['option_value'] ?? ''));
-            $allowed = ['salutation','designation','teacher_post','role','institution_level','state','country'];
-            if (!in_array($group, $allowed, true) || $value === '') throw new InvalidArgumentException('Choose a valid option group and enter a value.');
-            $pdo->prepare('INSERT INTO registration_form_options (option_group, option_value, sort_order) VALUES (:group_name, :value, :sort_order)')->execute([':group_name' => $group, ':value' => $value, ':sort_order' => (int) ($_POST['sort_order'] ?? 0)]);
-            $_SESSION['admin_success'] = 'Dropdown option added.';
-        } elseif ($action === 'toggle_option') {
-            $pdo->prepare('UPDATE registration_form_options SET is_active = 1 - is_active WHERE option_id = :id')->execute([':id' => (int) ($_POST['option_id'] ?? 0)]);
-            $_SESSION['admin_success'] = 'Dropdown option updated.';
         }
     } catch (Throwable $exception) {
         if ($pdo->inTransaction()) $pdo->rollBack();
@@ -59,7 +50,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $events = $pdo->query('SELECT event_id, event_title, event_status, start_date FROM events ORDER BY start_date DESC, event_title')->fetchAll() ?: [];
-$options = getRegistrationOptions($pdo, false); $activeOptions = getRegistrationOptions($pdo, true);
+$activeOptions = getRegistrationOptions($pdo, true);
 $invitations = $pdo->query('SELECT sri.*, e.event_title FROM special_registration_invitations sri JOIN events e ON e.event_id = sri.event_id ORDER BY sri.invitation_id DESC LIMIT 50')->fetchAll() ?: [];
 $csrf = htmlspecialchars($_SESSION['admin_registration_csrf']);
 $eventSelect = static function (array $events, string $name = 'event_id'): void { ?><select name="<?php echo $name; ?>" required><option value="">Select event</option><?php foreach ($events as $event): ?><option value="<?php echo (int) $event['event_id']; ?>"><?php echo htmlspecialchars($event['event_title'] . ' [' . $event['event_status'] . ']'); ?></option><?php endforeach; ?></select><?php };
@@ -73,7 +64,5 @@ ob_start(); ?>
 <section class="feedback-panel"><h2>Send Open Registration Link</h2><form method="post" class="special-registration-link-form"><input type="hidden" name="csrf_token" value="<?php echo $csrf; ?>"><label>Event<?php $eventSelect($events); ?></label><label>Candidate name<input name="candidate_name"></label><label>Email<input type="email" name="email"></label><label>WhatsApp<input name="whatsapp_number"></label><div class="wide feedback-send-actions"><button name="action" value="send_email">Send Email</button><button name="action" value="send_whatsapp">Send WhatsApp</button><button name="action" value="create_link" class="button-secondary">Create Link Only</button></div></form>
 <div class="event-report-table-wrap"><table><thead><tr><th>Event</th><th>Candidate</th><th>Contact</th><th>Status</th><th>Expires</th><th>Link</th></tr></thead><tbody><?php foreach ($invitations as $invitation): $link = buildSpecialRegistrationLink($invitation); ?><tr><td><?php echo htmlspecialchars($invitation['event_title']); ?></td><td><?php echo htmlspecialchars($invitation['candidate_name']); ?></td><td><?php echo htmlspecialchars($invitation['email'] ?: $invitation['whatsapp_number']); ?></td><td><?php echo htmlspecialchars($invitation['status']); ?></td><td><?php echo htmlspecialchars($invitation['expires_at']); ?></td><td><button type="button" class="button-secondary copy-registration-link" data-link="<?php echo htmlspecialchars($link); ?>">Copy</button></td></tr><?php endforeach; ?></tbody></table></div></section>
 
-<section class="feedback-panel"><h2>Registration Dropdown Options</h2><form method="post" class="registration-option-form"><input type="hidden" name="csrf_token" value="<?php echo $csrf; ?>"><input type="hidden" name="action" value="add_option"><label>Dropdown<select name="option_group"><option value="salutation">Salutation</option><option value="designation">Designation</option><option value="teacher_post">Post</option><option value="role">Role</option><option value="institution_level">Institution Level</option><option value="state">State</option><option value="country">Country</option></select></label><label>New value<input name="option_value" required></label><label>Order<input type="number" name="sort_order" value="0"></label><button type="submit">Add Option</button></form>
-<?php foreach ($options as $group => $values): ?><h3><?php echo htmlspecialchars(ucwords(str_replace('_', ' ', $group))); ?></h3><div class="registration-option-list"><?php foreach ($values as $option): ?><form method="post"><input type="hidden" name="csrf_token" value="<?php echo $csrf; ?>"><input type="hidden" name="action" value="toggle_option"><input type="hidden" name="option_id" value="<?php echo (int) $option['option_id']; ?>"><span><?php echo htmlspecialchars($option['option_value']); ?></span><button class="button-secondary"><?php echo $option['is_active'] ? 'Disable' : 'Enable'; ?></button></form><?php endforeach; ?></div><?php endforeach; ?></section>
 </div><script>document.querySelectorAll('.copy-registration-link').forEach(button=>button.addEventListener('click',async function(){await navigator.clipboard.writeText(this.dataset.link);this.textContent='Copied';}));</script>
 <?php $content = ob_get_clean(); renderAdminLayout('Admin Registration', $content, ['current_path' => 'admin_registration', 'page_heading' => 'Admin Registration']);
