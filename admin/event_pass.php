@@ -186,16 +186,21 @@ function formatEventPassHistorySummary(array $summary): string
     $parts = [];
     foreach (['email', 'whatsapp'] as $channel) {
         if (!isset($summary[$channel])) {
-            $parts[] = ucfirst($channel) . ': none';
+            $parts[] = $channel === 'whatsapp' ? 'WA(0): —' : 'Email: none';
             continue;
         }
 
         $entry = $summary[$channel];
+        if ($channel === 'whatsapp') {
+            $latestTime = date('d M, y H:i', strtotime($entry['last_at']));
+            $parts[] = 'WA(' . $entry['attempts'] . '): ' . $latestTime;
+            continue;
+        }
+
         $parts[] = ucfirst($channel)
             . ': ' . ($entry['status'] === 'sent' ? 'Sent' : 'Failed')
             . ' (' . $entry['attempts'] . ')'
-            . ' @ ' . date('d M, y H:i', strtotime($entry['last_at']))
-            . ($channel === 'whatsapp' && $entry['details'] !== '' ? ' — ' . $entry['details'] : '');
+            . ' @ ' . date('d M, y H:i', strtotime($entry['last_at']));
     }
 
     return implode(' | ', $parts);
@@ -1165,7 +1170,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'channel' => 'whatsapp',
                     'recipient' => $to,
                     'status' => 'sent',
-                    'details' => 'WhatsApp gateway accepted the request. HTTP ' . ($whatsappResponseCode ?? 'unknown'),
+                    'details' => null,
                     'message' => $body,
                     'qr_path' => $qrPath,
                     'pass_code' => $passCode,

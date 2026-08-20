@@ -41,6 +41,7 @@ function ensureRegistrationApprovalStorage(PDO $pdo): void
 SQL);
 
     $columns = [
+        'country' => 'ALTER TABLE event_registrations ADD COLUMN country VARCHAR(100) NULL AFTER state',
         'approval_status' => "ALTER TABLE event_registrations ADD COLUMN approval_status ENUM('pending', 'approved', 'denied') NOT NULL DEFAULT 'pending' AFTER qr_code_path",
         'pass_code' => 'ALTER TABLE event_registrations ADD COLUMN pass_code CHAR(5) NULL AFTER qr_code_path',
         'reviewed_at' => 'ALTER TABLE event_registrations ADD COLUMN reviewed_at DATETIME NULL AFTER approval_status',
@@ -72,13 +73,14 @@ SQL);
     }
 }
 
-function getOpenEventsForApproval(PDO $pdo): array
+function getOpenEventsForApproval(PDO $pdo, bool $includeEventsWithoutRegistration = false): array
 {
-    $statement = $pdo->query(<<<'SQL'
+    $registrationFilter = $includeEventsWithoutRegistration ? '' : ' AND registration_required = 1';
+    $statement = $pdo->query(<<<SQL
         SELECT event_id, event_title, event_code, start_date
         FROM events
         WHERE event_status = 'Open'
-          AND registration_required = 1
+          {$registrationFilter}
           AND (end_date IS NULL OR end_date >= CURDATE())
         ORDER BY start_date ASC, event_title ASC
 SQL);
@@ -97,14 +99,15 @@ SQL);
     return $statement->fetchAll();
 }
 
-function openEventExists(PDO $pdo, int $eventId): bool
+function openEventExists(PDO $pdo, int $eventId, bool $includeEventsWithoutRegistration = false): bool
 {
-    $statement = $pdo->prepare(<<<'SQL'
+    $registrationFilter = $includeEventsWithoutRegistration ? '' : ' AND registration_required = 1';
+    $statement = $pdo->prepare(<<<SQL
         SELECT COUNT(*)
         FROM events
         WHERE event_id = :event_id
           AND event_status = 'Open'
-          AND registration_required = 1
+          {$registrationFilter}
           AND (end_date IS NULL OR end_date >= CURDATE())
 SQL);
     $statement->execute([':event_id' => $eventId]);

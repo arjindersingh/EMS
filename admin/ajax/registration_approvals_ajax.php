@@ -39,7 +39,8 @@ try {
     ensureRegistrationApprovalStorage($pdo);
 
     $eventId = (int) ($_POST['event_id'] ?? 0);
-    if ($eventId <= 0 || !openEventExists($pdo, $eventId)) {
+    $includeEventsWithoutRegistration = (string) ($_POST['include_non_registration_events'] ?? '') === '1';
+    if ($eventId <= 0 || !openEventExists($pdo, $eventId, $includeEventsWithoutRegistration)) {
         throw new InvalidArgumentException('Please select a valid open event.');
     }
 

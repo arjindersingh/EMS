@@ -50,6 +50,7 @@ function renderAdminLayout(string $pageTitle, string $content, array $pageData =
                 ['registration_approvals', 'admin/registration_approvals.php', 'Approval'],
                 ['event_pass', 'admin/event_pass.php', 'Event Pass'],
                 ['admin_registration', 'admin/registration.php', 'Registration'],
+                ['registration_bulk_upload', 'admin/registration_bulk_upload.php', 'Bulk Upload'],
             ],
             'On' => [
                 ['event_checkin', 'admin/event_checkin.php', 'Event Check-in'],

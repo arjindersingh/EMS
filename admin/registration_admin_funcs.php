@@ -65,13 +65,23 @@ function saveAdministrativeRegistration(PDO $pdo, array $data): int
         if (!preg_match('/^\+?[0-9]{7,15}$/', (string) $normalized)) throw new InvalidArgumentException($label . ' must contain 7 to 15 digits and may begin with +.');
     }
     $fields = ['event_id','salutation','name','designation','teacher_post','role','institution_name','affiliation_number','institution_level','experience','mobile','whatsapp_number','official_email','institution_address','city','district','state','country','declaration_accepted'];
+    $declarationAccepted = administrativeRegistrationDeclarationValue($data['declaration_accepted'] ?? 1);
     $columns = implode(', ', $fields);
     $placeholders = implode(', ', array_map(static fn($field) => ':' . $field, $fields));
     $statement = $pdo->prepare("INSERT INTO event_registrations ({$columns}) VALUES ({$placeholders})");
     $params = [];
-    foreach ($fields as $field) $params[':' . $field] = $field === 'event_id' ? (int) $data[$field] : ($field === 'declaration_accepted' ? 1 : trim((string) ($data[$field] ?? '')));
+    foreach ($fields as $field) $params[':' . $field] = $field === 'event_id' ? (int) $data[$field] : ($field === 'declaration_accepted' ? $declarationAccepted : trim((string) ($data[$field] ?? '')));
     $statement->execute($params);
     return (int) $pdo->lastInsertId();
+}
+
+function administrativeRegistrationDeclarationValue(mixed $value): int
+{
+    if (is_bool($value)) return $value ? 1 : 0;
+    $normalized = strtolower(trim((string) $value));
+    if ($normalized === '' || in_array($normalized, ['1', 'true', 'yes', 'y', 'accepted', 'on'], true)) return 1;
+    if (in_array($normalized, ['0', 'false', 'no', 'n', 'not accepted', 'off'], true)) return 0;
+    throw new InvalidArgumentException('Declaration accepted must be Yes/No or 1/0.');
 }
 
 function saveAdministrativePhotograph(PDO $pdo, array $file, int $eventId, int $registrationId, string $name): void

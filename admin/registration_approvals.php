@@ -36,6 +36,7 @@ $pdo = null;
 $events = [];
 $registrations = [];
 $selectedEventId = (int) ($_GET['event_id'] ?? $_POST['event_id'] ?? 0);
+$includeEventsWithoutRegistration = (string) ($_GET['include_non_registration_events'] ?? $_POST['include_non_registration_events'] ?? '') === '1';
 $errorMessage = '';
 $successMessage = (string) ($_SESSION['approval_success'] ?? '');
 unset($_SESSION['approval_success']);
@@ -44,14 +45,14 @@ try {
     $pdo = createDbConnection();
     ensureEventsTable($pdo);
     ensureRegistrationApprovalStorage($pdo);
-    $events = getOpenEventsForApproval($pdo);
+    $events = getOpenEventsForApproval($pdo, $includeEventsWithoutRegistration);
 
     if ($selectedEventId === 0 && !empty($events)) {
         $selectedEventId = (int) $events[0]['event_id'];
     }
 
     if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-        if (!openEventExists($pdo, $selectedEventId)) {
+        if (!openEventExists($pdo, $selectedEventId, $includeEventsWithoutRegistration)) {
             throw new InvalidArgumentException('Please select a valid open event.');
         }
 
@@ -89,14 +90,16 @@ try {
             exit;
         }
 
-        header('Location: ' . buildUrl('admin/registration_approvals.php') . '?event_id=' . $selectedEventId);
+        $redirectQuery = ['event_id' => $selectedEventId];
+        if ($includeEventsWithoutRegistration) $redirectQuery['include_non_registration_events'] = '1';
+        header('Location: ' . buildUrl('admin/registration_approvals.php') . '?' . http_build_query($redirectQuery));
         exit;
     }
 
-    if ($selectedEventId > 0 && openEventExists($pdo, $selectedEventId)) {
+    if ($selectedEventId > 0 && openEventExists($pdo, $selectedEventId, $includeEventsWithoutRegistration)) {
         $registrations = getEventRegistrationsForApproval($pdo, $selectedEventId);
     } elseif ($selectedEventId > 0) {
-        $errorMessage = 'The selected event is not open for registration.';
+        $errorMessage = 'The selected event is not available for approval.';
         $selectedEventId = 0;
     }
 } catch (InvalidArgumentException $exception) {
@@ -156,6 +159,7 @@ ob_start();
             </option>
         <?php endforeach; ?>
     </select>
+    <label class="approval-include-events"><input type="checkbox" name="include_non_registration_events" value="1" <?php echo $includeEventsWithoutRegistration ? 'checked' : ''; ?> onchange="this.form.submit()"> Include open events that do not require registration</label>
 </form>
 
 <?php if ($selectedEventId > 0): ?>
@@ -170,12 +174,14 @@ ob_start();
         <form method="post" action="<?php echo htmlspecialchars(buildUrl('admin/registration_approvals.php'), ENT_QUOTES, 'UTF-8'); ?>" class="approval-ajax-form" data-confirm="Approve all registrations for this event?">
             <input type="hidden" name="action" value="set_all">
             <input type="hidden" name="event_id" value="<?php echo $selectedEventId; ?>">
+            <?php if ($includeEventsWithoutRegistration): ?><input type="hidden" name="include_non_registration_events" value="1"><?php endif; ?>
             <input type="hidden" name="status" value="approved">
             <button type="submit" class="approval-button approve">Approve All</button>
         </form>
         <form method="post" action="<?php echo htmlspecialchars(buildUrl('admin/registration_approvals.php'), ENT_QUOTES, 'UTF-8'); ?>" class="approval-ajax-form" data-confirm="Deny all registrations for this event?">
             <input type="hidden" name="action" value="set_all">
             <input type="hidden" name="event_id" value="<?php echo $selectedEventId; ?>">
+            <?php if ($includeEventsWithoutRegistration): ?><input type="hidden" name="include_non_registration_events" value="1"><?php endif; ?>
             <input type="hidden" name="status" value="denied">
             <button type="submit" class="approval-button deny">Deny All</button>
         </form>
@@ -200,6 +206,7 @@ ob_start();
                                 <form method="post" action="<?php echo htmlspecialchars(buildUrl('admin/registration_approvals.php'), ENT_QUOTES, 'UTF-8'); ?>" class="approval-toggle approval-ajax-form">
                                     <input type="hidden" name="action" value="set_registration">
                                     <input type="hidden" name="event_id" value="<?php echo $selectedEventId; ?>">
+                                    <?php if ($includeEventsWithoutRegistration): ?><input type="hidden" name="include_non_registration_events" value="1"><?php endif; ?>
                                     <input type="hidden" name="registration_id" value="<?php echo (int) $registration['registration_id']; ?>">
                                     <button type="submit" name="status" value="approved" class="toggle-option approve <?php echo $status === 'approved' ? 'active' : ''; ?>">Approve</button>
                                     <button type="submit" name="status" value="denied" class="toggle-option deny <?php echo $status === 'denied' ? 'active' : ''; ?>">Deny</button>
