@@ -1,0 +1,21 @@
+FROM dunglas/frankenphp:php8.4
+
+WORKDIR /app
+
+# Required for your PDO MySQL connection
+RUN install-php-extensions \
+    pdo_mysql \
+    mysqli \
+    opcache
+
+# Production PHP configuration
+RUN mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
+
+# Copy LMS source
+COPY . /app
+
+# Your index.php is in project root, not /public
+ENV SERVER_ROOT=.
+ENV SERVER_NAME=:80
+
+EXPOSE 80
