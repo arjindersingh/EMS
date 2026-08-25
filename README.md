@@ -20,10 +20,13 @@ The application uses PDO with MySQL. Configure connection values in `.env` or vi
 
 ## Deploy to Vercel
 
-Vercel builds `Dockerfile.vercel` automatically and runs the application as a
+Vercel builds `Dockerfile.vercel` and runs the application as a
 container-backed Function. Import this repository into Vercel with the project
-root set to the repository root. Leave Framework Preset as `Other` and do not
-set Build Command, Output Directory, or Install Command overrides.
+root set to the repository root. Set Framework Preset to `Services`; the
+`vercel.json` file explicitly routes every request to the PHP container. Do not
+set Build Command, Output Directory, or Install Command overrides. In
+particular, an Output Directory of `.` publishes the PHP source as static files
+instead of executing it.
 
 Add these variables under **Project Settings > Environment Variables** for
 Production and Preview as appropriate:
