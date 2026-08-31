@@ -306,7 +306,22 @@ SQL
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_event_attendance_event (event_id),
-            INDEX idx_event_attendance_registration (registration_id)
+            INDEX idx_event_attendance_registration (registration_id),
+            UNIQUE KEY uq_event_attendance_registration (event_id, registration_id)
+        )
+SQL
+    );
+
+    $pdo->exec(<<<'SQL'
+        CREATE TABLE IF NOT EXISTS api_tokens (
+            token_id INT AUTO_INCREMENT PRIMARY KEY,
+            admin_user_id INT NOT NULL,
+            token_hash CHAR(64) NOT NULL UNIQUE,
+            device_label VARCHAR(255) NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            last_used_at DATETIME NULL,
+            revoked_at DATETIME NULL,
+            INDEX idx_api_tokens_admin_user (admin_user_id)
         )
 SQL
     );
@@ -467,7 +482,7 @@ ensureAppSchema($pdo);
 seedDefaultSettings($pdo);
 
 $createdTables = [];
-foreach (['admin_users','settings','events','event_schedules','event_itineraries','registration_form_options','special_registration_invitations','event_registrations','event_attendance','event_pass_history','feedback_types','feedback_items','feedback_invitations','feedback_responses','feedback_delivery_history','feedback_qualitative_responses','broadcast_messages','broadcast_logs'] as $table) {
+foreach (['admin_users','settings','events','event_schedules','event_itineraries','registration_form_options','special_registration_invitations','event_registrations','event_attendance','api_tokens','event_pass_history','feedback_types','feedback_items','feedback_invitations','feedback_responses','feedback_delivery_history','feedback_qualitative_responses','broadcast_messages','broadcast_logs'] as $table) {
     if (tableExists($pdo, $table)) {
         $createdTables[] = $table;
     }

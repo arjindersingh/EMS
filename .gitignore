@@ -1,3 +1,14 @@
 vendor/
 .env
 *.log
+
+# Android app (mobile/)
+mobile/.gradle/
+mobile/**/build/
+mobile/local.properties
+mobile/.idea/
+mobile/*.iml
+mobile/**/*.iml
+mobile/.cxx/
+mobile/captures/
+
