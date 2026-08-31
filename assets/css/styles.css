@@ -4816,6 +4816,26 @@ td {
     background: #fee2e2;
 }
 
+.bulk-import-result-list {
+    margin-top: 1.5rem;
+}
+
+.bulk-import-result-list-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: .8rem;
+}
+
+.bulk-import-result-list-heading h3 {
+    margin: 0;
+}
+
+.bulk-import-exports {
+    justify-content: flex-start;
+}
+
 @media (max-width: 760px) {
     .bulk-import-upload-form {
         grid-template-columns: 1fr;

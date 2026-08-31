@@ -711,6 +711,252 @@ function registrationBulkUploadRecordError(Throwable $exception): string
     return 'Could not save this record. Check the mapped values and try again.';
 }
 
+function registrationBulkUploadResultsForList(array $result, string $list): array
+{
+    $results = (array) ($result['results'] ?? []);
+    return array_values(array_filter($results, static function (array $record) use ($list): bool {
+        $status = (string) ($record['status'] ?? 'Failed');
+        return $list === 'uploaded' ? $status === 'Uploaded' : $status !== 'Uploaded';
+    }));
+}
+
+function registrationBulkUploadListTitle(string $list): string
+{
+    return $list === 'uploaded' ? 'Successfully Uploaded Registrations' : 'Failed & Skipped Registrations';
+}
+
+function registrationBulkUploadExportFilename(array $result, string $list, string $extension): string
+{
+    $eventTitle = strtolower((string) ($result['event_title'] ?? 'event'));
+    $filename = preg_replace('/[^a-z0-9]+/i', '-', 'registration-import-' . $list . '-' . $eventTitle) ?: 'registration-import-' . $list;
+    return trim($filename, '-') . '.' . $extension;
+}
+
+function registrationBulkUploadXml(string $value): string
+{
+    if (function_exists('iconv')) {
+        $converted = @iconv('UTF-8', 'UTF-8//IGNORE', $value);
+        if ($converted !== false) {
+            $value = $converted;
+        }
+    }
+    $value = preg_replace('/[^\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]/u', '', $value) ?? '';
+
+    return htmlspecialchars($value, ENT_XML1 | ENT_QUOTES, 'UTF-8');
+}
+
+function registrationBulkUploadDocxParagraph(string $value, bool $bold = false, int $fontSize = 18): string
+{
+    $value = preg_replace('/\s+/', ' ', trim($value)) ?? '';
+    $runProperties = '<w:sz w:val="' . $fontSize . '"/><w:szCs w:val="' . $fontSize . '"/>';
+    if ($bold) {
+        $runProperties .= '<w:b/><w:bCs/>';
+    }
+
+    return '<w:p><w:pPr><w:spacing w:after="0" w:line="220" w:lineRule="auto"/></w:pPr><w:r><w:rPr>'
+        . $runProperties
+        . '</w:rPr><w:t xml:space="preserve">'
+        . registrationBulkUploadXml($value)
+        . '</w:t></w:r></w:p>';
+}
+
+function registrationBulkUploadDocxCell(string $value, int $width, bool $isHeader = false): string
+{
+    $cellProperties = '<w:tcPr><w:tcW w:w="' . $width . '" w:type="dxa"/><w:tcMar><w:top w:w="85" w:type="dxa"/><w:start w:w="100" w:type="dxa"/><w:bottom w:w="85" w:type="dxa"/><w:end w:w="100" w:type="dxa"/></w:tcMar>';
+    if ($isHeader) {
+        $cellProperties .= '<w:shd w:val="clear" w:color="auto" w:fill="0F766E"/>';
+    }
+    $cellProperties .= '</w:tcPr>';
+
+    return '<w:tc>' . $cellProperties . registrationBulkUploadDocxParagraph($value, $isHeader, $isHeader ? 16 : 15) . '</w:tc>';
+}
+
+function registrationBulkUploadBuildDocxDocument(array $result, string $list): string
+{
+    $records = registrationBulkUploadResultsForList($result, $list);
+    $fileName = (string) ($result['file_name'] ?? 'Registration import');
+    $eventTitle = (string) ($result['event_title'] ?? 'Event');
+    $metadata = 'Total in this list: ' . count($records) . '  |  Generated: ' . date('d M Y, h:i A');
+
+    $widths = [1200, 2400, 1800, 3960];
+    $headers = ['Excel Row', 'Name', 'Status', 'Detail'];
+    $grid = '';
+    $headerCells = '';
+    foreach ($widths as $index => $width) {
+        $grid .= '<w:gridCol w:w="' . $width . '"/>';
+        $headerCells .= registrationBulkUploadDocxCell($headers[$index], $width, true);
+    }
+
+    $rows = '<w:tr><w:trPr><w:tblHeader/></w:trPr>' . $headerCells . '</w:tr>';
+    foreach ($records as $record) {
+        $cells = [
+            (string) ($record['source_row'] ?? 0),
+            (string) (($record['name'] ?? '') !== '' ? $record['name'] : '—'),
+            (string) ($record['status'] ?? ''),
+            (string) ($record['detail'] ?? ''),
+        ];
+        $rowCells = '';
+        foreach ($cells as $cellIndex => $cell) {
+            $rowCells .= registrationBulkUploadDocxCell($cell, $widths[$cellIndex]);
+        }
+        $rows .= '<w:tr>' . $rowCells . '</w:tr>';
+    }
+
+    if ($records === []) {
+        $rows .= '<w:tr>' . registrationBulkUploadDocxCell('No records in this list.', array_sum($widths)) . '</w:tr>';
+    }
+
+    return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        . '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        . '<w:body>'
+        . registrationBulkUploadDocxParagraph(registrationBulkUploadListTitle($list), true, 32)
+        . registrationBulkUploadDocxParagraph($fileName . ' · ' . $eventTitle, true, 22)
+        . registrationBulkUploadDocxParagraph($metadata, false, 16)
+        . '<w:p/>'
+        . '<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblLayout w:type="fixed"/>'
+        . '<w:tblBorders><w:top w:val="single" w:sz="6" w:space="0" w:color="B8C9C5"/><w:start w:val="single" w:sz="6" w:space="0" w:color="B8C9C5"/><w:bottom w:val="single" w:sz="6" w:space="0" w:color="B8C9C5"/><w:end w:val="single" w:sz="6" w:space="0" w:color="B8C9C5"/><w:insideH w:val="single" w:sz="4" w:space="0" w:color="D9E5E2"/><w:insideV w:val="single" w:sz="4" w:space="0" w:color="D9E5E2"/></w:tblBorders></w:tblPr>'
+        . '<w:tblGrid>' . $grid . '</w:tblGrid>'
+        . $rows
+        . '</w:tbl>'
+        . '<w:sectPr><w:pgSz w:w="15840" w:h="12240" w:orient="landscape"/><w:pgMar w:top="720" w:right="720" w:bottom="720" w:left="720" w:header="360" w:footer="360" w:gutter="0"/></w:sectPr>'
+        . '</w:body></w:document>';
+}
+
+function registrationBulkUploadExportDocx(array $result, string $list): void
+{
+    if (!class_exists('ZipArchive')) {
+        throw new RuntimeException('DOCX export requires the PHP Zip extension.');
+    }
+
+    $temporaryFile = tempnam(sys_get_temp_dir(), 'ems-bulk-upload-');
+    if ($temporaryFile === false) {
+        throw new RuntimeException('Unable to prepare the DOCX export.');
+    }
+
+    $zipOpened = false;
+    try {
+        $zip = new ZipArchive();
+        if ($zip->open($temporaryFile, ZipArchive::OVERWRITE) !== true) {
+            throw new RuntimeException('Unable to create the DOCX export.');
+        }
+        $zipOpened = true;
+
+        $docxFiles = [
+            '[Content_Types].xml' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+            '_rels/.rels' => '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+            'word/document.xml' => registrationBulkUploadBuildDocxDocument($result, $list),
+        ];
+        foreach ($docxFiles as $path => $contents) {
+            if (!$zip->addFromString($path, $contents)) {
+                throw new RuntimeException('Unable to write the DOCX export.');
+            }
+        }
+        if (!$zip->close()) {
+            throw new RuntimeException('Unable to finalize the DOCX export.');
+        }
+        $zipOpened = false;
+
+        header('Content-Type: application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+        header('Content-Disposition: attachment; filename="' . registrationBulkUploadExportFilename($result, $list, 'docx') . '"');
+        header('Content-Length: ' . (string) filesize($temporaryFile));
+        header('Cache-Control: private, max-age=0, must-revalidate');
+        readfile($temporaryFile);
+    } finally {
+        if ($zipOpened) {
+            $zip->close();
+        }
+        if (is_file($temporaryFile)) {
+            @unlink($temporaryFile);
+        }
+    }
+
+    exit;
+}
+
+function registrationBulkUploadExportPdf(array $result, string $list): void
+{
+    $records = registrationBulkUploadResultsForList($result, $list);
+    $fileName = (string) ($result['file_name'] ?? 'Registration import');
+    $eventTitle = (string) ($result['event_title'] ?? 'Event');
+    $title = registrationBulkUploadListTitle($list);
+    $badgeLabel = $list === 'uploaded' ? 'uploaded' : 'failed / skipped';
+
+    header('Content-Type: text/html; charset=UTF-8');
+    header('Cache-Control: private, max-age=0, must-revalidate');
+    ?>
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title><?php echo htmlspecialchars($title . ' — ' . $eventTitle, ENT_QUOTES, 'UTF-8'); ?></title>
+    <style>
+        @page { size: A4 landscape; margin: 11mm; }
+        * { box-sizing: border-box; }
+        body { margin: 0; color: #1f2937; background: #eef4f2; font-family: Arial, sans-serif; }
+        .print-actions { position: fixed; z-index: 2; top: 18px; right: 18px; }
+        .print-actions button { border: 0; border-radius: 8px; padding: 10px 15px; background: #0f766e; color: #fff; cursor: pointer; font: 700 14px Arial, sans-serif; }
+        .sheet { width: min(1180px, calc(100% - 32px)); margin: 32px auto; padding: 28px; background: #fff; box-shadow: 0 14px 40px rgba(15, 23, 42, .12); }
+        .sheet-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; padding-bottom: 18px; border-bottom: 3px solid #0f766e; }
+        .eyebrow { margin: 0 0 7px; color: #0f766e; font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+        h1 { margin: 0; color: #163c39; font-size: 27px; }
+        .event-details { margin: 7px 0 0; color: #64748b; font-size: 13px; }
+        .total { min-width: 140px; padding: 12px 16px; border-radius: 10px; background: #ecfdf5; color: #0f766e; text-align: center; }
+        .total strong, .total span { display: block; }
+        .total strong { font-size: 25px; line-height: 1; }
+        .total span { margin-top: 5px; font-size: 10px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+        table { width: 100%; margin-top: 22px; border-collapse: collapse; font-size: 11px; }
+        th, td { padding: 8px 7px; border: 1px solid #dce7e4; text-align: left; vertical-align: top; }
+        th { background: #113f3a; color: #fff; font-size: 9px; letter-spacing: .05em; text-transform: uppercase; }
+        tbody tr:nth-child(even) { background: #f7fbfa; }
+        .empty { padding: 28px; color: #64748b; text-align: center; }
+        .footer { margin-top: 14px; color: #64748b; font-size: 9px; text-align: right; }
+        @media print {
+            body { background: #fff; }
+            .print-actions { display: none; }
+            .sheet { width: auto; margin: 0; padding: 0; box-shadow: none; }
+            thead { display: table-header-group; }
+            tr { break-inside: avoid; page-break-inside: avoid; }
+        }
+    </style>
+</head>
+<body>
+    <div class="print-actions"><button type="button" onclick="window.print()">Save as PDF</button></div>
+    <main class="sheet">
+        <header class="sheet-header">
+            <div>
+                <p class="eyebrow">Registration bulk import</p>
+                <h1><?php echo htmlspecialchars($title, ENT_QUOTES, 'UTF-8'); ?></h1>
+                <p class="event-details"><?php echo htmlspecialchars($fileName . ' · ' . $eventTitle, ENT_QUOTES, 'UTF-8'); ?></p>
+            </div>
+            <div class="total"><strong><?php echo number_format(count($records)); ?></strong><span><?php echo htmlspecialchars($badgeLabel, ENT_QUOTES, 'UTF-8'); ?></span></div>
+        </header>
+        <table>
+            <thead><tr><th>Excel Row</th><th>Name</th><th>Status</th><th>Detail</th></tr></thead>
+            <tbody>
+                <?php if ($records === []): ?>
+                    <tr><td class="empty" colspan="4">No records in this list.</td></tr>
+                <?php else: ?>
+                    <?php foreach ($records as $record): ?>
+                        <tr>
+                            <td><?php echo (int) ($record['source_row'] ?? 0); ?></td>
+                            <td><?php echo htmlspecialchars((string) (($record['name'] ?? '') !== '' ? $record['name'] : '—'), ENT_QUOTES, 'UTF-8'); ?></td>
+                            <td><?php echo htmlspecialchars((string) ($record['status'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
+                            <td><?php echo htmlspecialchars((string) ($record['detail'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </tbody>
+        </table>
+        <div class="footer">Generated <?php echo htmlspecialchars(date('d M Y, h:i A'), ENT_QUOTES, 'UTF-8'); ?></div>
+    </main>
+    <script>window.addEventListener('load', function () { window.print(); });</script>
+</body>
+</html>
+<?php
+    exit;
+}
+
 function registrationBulkUploadTemporaryDirectory(): string
 {
     $directory = rtrim(sys_get_temp_dir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'ems-registration-bulk-upload';

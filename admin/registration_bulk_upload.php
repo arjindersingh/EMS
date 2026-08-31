@@ -110,6 +110,16 @@ try {
             $error = 'The upload result is no longer available. Start a new import to continue.';
         }
     }
+
+    $export = strtolower(trim((string) ($_GET['export'] ?? '')));
+    $exportList = strtolower(trim((string) ($_GET['list'] ?? '')));
+    if (is_array($result) && in_array($export, ['docx', 'pdf'], true) && in_array($exportList, ['uploaded', 'failed'], true)) {
+        if ($export === 'docx') {
+            registrationBulkUploadExportDocx($result, $exportList);
+        } else {
+            registrationBulkUploadExportPdf($result, $exportList);
+        }
+    }
 } catch (Throwable $exception) {
     $error = $exception instanceof InvalidArgumentException || $exception instanceof RuntimeException
         ? $exception->getMessage()
@@ -124,14 +134,19 @@ ob_start();
     <?php endif; ?>
 
     <?php if (is_array($result)): ?>
-        <?php $summary = (array) ($result['summary'] ?? []); ?>
+        <?php
+        $summary = (array) ($result['summary'] ?? []);
+        $uploadedRecords = registrationBulkUploadResultsForList($result, 'uploaded');
+        $failedRecords = registrationBulkUploadResultsForList($result, 'failed');
+        $resultExportBase = buildUrl('admin/registration_bulk_upload.php') . '?result=' . rawurlencode((string) ($_GET['result'] ?? ''));
+        ?>
         <section class="bulk-import-result-panel">
             <div class="bulk-import-result-heading">
                 <div>
                     <p class="bulk-import-eyebrow">Registration import complete</p>
                     <h2><?php echo bulkRegistrationUploadEscape((string) ($result['file_name'] ?? 'Registration import')); ?></h2>
                     <p class="small">Event: <strong><?php echo bulkRegistrationUploadEscape((string) ($result['event_title'] ?? 'Event')); ?></strong> (ID: <?php echo (int) ($result['event_id'] ?? 0); ?>)</p>
-                    <p class="small">Every data row is listed below with its final upload status.</p>
+                    <p class="small">Rows are grouped below into a successfully uploaded list and a failed/skipped list.</p>
                 </div>
                 <form method="post" class="bulk-import-start-over">
                     <input type="hidden" name="csrf_token" value="<?php echo bulkRegistrationUploadEscape($csrfToken); ?>">
@@ -146,23 +161,75 @@ ob_start();
                 <div class="failed"><span>Failed</span><strong><?php echo (int) ($summary['failed'] ?? 0); ?></strong></div>
             </div>
 
-            <div class="bulk-import-results-table-wrap">
-                <table class="bulk-import-results-table">
-                    <caption class="bulk-import-table-caption">Final upload status for every registration row.</caption>
-                    <thead><tr><th scope="col">Excel Row</th><th scope="col">Name</th><th scope="col">Status</th><th scope="col">Details</th></tr></thead>
-                    <tbody>
-                        <?php foreach ((array) ($result['results'] ?? []) as $record): ?>
-                            <?php $status = (string) ($record['status'] ?? 'Failed'); ?>
-                            <tr>
-                                <td data-label="Excel Row"><?php echo (int) ($record['source_row'] ?? 0); ?></td>
-                                <td data-label="Name"><?php echo bulkRegistrationUploadEscape((string) (($record['name'] ?? '') !== '' ? $record['name'] : '—')); ?></td>
-                                <td data-label="Status"><span class="bulk-import-status <?php echo bulkRegistrationUploadStatusClass($status); ?>"><?php echo bulkRegistrationUploadEscape($status); ?></span></td>
-                                <td data-label="Details"><?php echo bulkRegistrationUploadEscape((string) ($record['detail'] ?? '')); ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
+            <section class="bulk-import-result-list">
+                <div class="bulk-import-result-list-heading">
+                    <h3>Successfully uploaded (<?php echo count($uploadedRecords); ?>)</h3>
+                    <div class="bulk-import-exports live-checkin-exports" aria-label="Export uploaded list">
+                        <a class="live-checkin-export-link docx" href="<?php echo bulkRegistrationUploadEscape($resultExportBase . '&list=uploaded&export=docx'); ?>">
+                            <span aria-hidden="true">↓</span> Export DOCX
+                        </a>
+                        <a class="live-checkin-export-link pdf" target="_blank" href="<?php echo bulkRegistrationUploadEscape($resultExportBase . '&list=uploaded&export=pdf'); ?>">
+                            <span aria-hidden="true">↓</span> Export PDF
+                        </a>
+                    </div>
+                </div>
+                <div class="bulk-import-results-table-wrap">
+                    <table class="bulk-import-results-table">
+                        <caption class="bulk-import-table-caption">Registration rows that were uploaded successfully.</caption>
+                        <thead><tr><th scope="col">Excel Row</th><th scope="col">Name</th><th scope="col">Status</th><th scope="col">Details</th></tr></thead>
+                        <tbody>
+                            <?php if ($uploadedRecords === []): ?>
+                                <tr><td colspan="4">No rows were uploaded.</td></tr>
+                            <?php else: ?>
+                                <?php foreach ($uploadedRecords as $record): ?>
+                                    <?php $status = (string) ($record['status'] ?? 'Failed'); ?>
+                                    <tr>
+                                        <td data-label="Excel Row"><?php echo (int) ($record['source_row'] ?? 0); ?></td>
+                                        <td data-label="Name"><?php echo bulkRegistrationUploadEscape((string) (($record['name'] ?? '') !== '' ? $record['name'] : '—')); ?></td>
+                                        <td data-label="Status"><span class="bulk-import-status <?php echo bulkRegistrationUploadStatusClass($status); ?>"><?php echo bulkRegistrationUploadEscape($status); ?></span></td>
+                                        <td data-label="Details"><?php echo bulkRegistrationUploadEscape((string) ($record['detail'] ?? '')); ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <section class="bulk-import-result-list">
+                <div class="bulk-import-result-list-heading">
+                    <h3>Failed &amp; skipped (<?php echo count($failedRecords); ?>)</h3>
+                    <div class="bulk-import-exports live-checkin-exports" aria-label="Export failed list">
+                        <a class="live-checkin-export-link docx" href="<?php echo bulkRegistrationUploadEscape($resultExportBase . '&list=failed&export=docx'); ?>">
+                            <span aria-hidden="true">↓</span> Export DOCX
+                        </a>
+                        <a class="live-checkin-export-link pdf" target="_blank" href="<?php echo bulkRegistrationUploadEscape($resultExportBase . '&list=failed&export=pdf'); ?>">
+                            <span aria-hidden="true">↓</span> Export PDF
+                        </a>
+                    </div>
+                </div>
+                <div class="bulk-import-results-table-wrap">
+                    <table class="bulk-import-results-table">
+                        <caption class="bulk-import-table-caption">Registration rows that failed or were skipped.</caption>
+                        <thead><tr><th scope="col">Excel Row</th><th scope="col">Name</th><th scope="col">Status</th><th scope="col">Details</th></tr></thead>
+                        <tbody>
+                            <?php if ($failedRecords === []): ?>
+                                <tr><td colspan="4">No rows failed or were skipped.</td></tr>
+                            <?php else: ?>
+                                <?php foreach ($failedRecords as $record): ?>
+                                    <?php $status = (string) ($record['status'] ?? 'Failed'); ?>
+                                    <tr>
+                                        <td data-label="Excel Row"><?php echo (int) ($record['source_row'] ?? 0); ?></td>
+                                        <td data-label="Name"><?php echo bulkRegistrationUploadEscape((string) (($record['name'] ?? '') !== '' ? $record['name'] : '—')); ?></td>
+                                        <td data-label="Status"><span class="bulk-import-status <?php echo bulkRegistrationUploadStatusClass($status); ?>"><?php echo bulkRegistrationUploadEscape($status); ?></span></td>
+                                        <td data-label="Details"><?php echo bulkRegistrationUploadEscape((string) ($record['detail'] ?? '')); ?></td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
         </section>
     <?php elseif (is_array($workbook)): ?>
         <?php
