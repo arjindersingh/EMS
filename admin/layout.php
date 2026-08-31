@@ -54,6 +54,7 @@ function renderAdminLayout(string $pageTitle, string $content, array $pageData =
             ],
             'On' => [
                 ['event_checkin', 'admin/event_checkin.php', 'Event Check-in'],
+                ['attendee_list', 'admin/attendee_list.php', 'Live Checkin'],
                 ['attendance_view', 'admin/attendance_view.php', 'Live Attendance'],
             ],
             'Post' => [
