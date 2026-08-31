@@ -1,0 +1,24 @@
+FROM dunglas/frankenphp:php8.4
+
+WORKDIR /app
+
+# Extensions used by the database layer, spreadsheet imports, and validation.
+RUN install-php-extensions \
+    pdo_mysql \
+    zip \
+    mbstring \
+    opcache
+
+# Production PHP configuration
+RUN mv "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
+
+# Copy the application source.
+COPY . /app
+
+# The application entry point is in the project root. Vercel injects PORT at
+# runtime; FrankenPHP's bundled Caddy configuration reads SERVER_NAME.
+ENV SERVER_ROOT=.
+
+EXPOSE 80
+
+CMD ["sh", "-c", "SERVER_NAME=\":${PORT:-80}\" exec frankenphp run --config /etc/caddy/Caddyfile"]

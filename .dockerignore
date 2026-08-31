@@ -1,0 +1,10 @@
+.git
+.github
+.env
+.env.*
+node_modules
+vendor
+Dockerfile
+docker-compose.yml
+docker-compose.yaml
+README.md
