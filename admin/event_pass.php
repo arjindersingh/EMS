@@ -177,6 +177,49 @@ SQL
     return $summaries;
 }
 
+/**
+ * Return whether each approved candidate has ever had a successful delivery
+ * for each channel. This is intentionally separate from the latest-attempt
+ * summary above: a later failed retry must not remove a candidate from a
+ * successful-delivery tab.
+ */
+function getEventPassDeliveryStates(PDO $pdo, int $eventId): array
+{
+    $statement = $pdo->prepare(<<<'SQL'
+        SELECT registration_id,
+               channel,
+               MAX(CASE WHEN status = 'sent' THEN 1 ELSE 0 END) AS ever_sent
+        FROM event_pass_history
+        WHERE event_id = :event_id
+        GROUP BY registration_id, channel
+SQL
+    );
+    $statement->execute([':event_id' => $eventId]);
+
+    $states = [];
+    foreach ($statement->fetchAll() as $row) {
+        $registrationId = (int) $row['registration_id'];
+        $channel = (string) $row['channel'];
+        $states[$registrationId][$channel] = (int) $row['ever_sent'] === 1;
+    }
+
+    return $states;
+}
+
+function normalizeEventPassTableTab(string $tab): string
+{
+    $allowedTabs = ['total', 'pending', 'email_sent', 'whatsapp_sent'];
+    return in_array($tab, $allowedTabs, true) ? $tab : 'total';
+}
+
+function buildEventPassPageUrl(int $eventId, string $tab): string
+{
+    return buildUrl('admin/event_pass.php') . '?' . http_build_query([
+        'event' => $eventId,
+        'tab' => normalizeEventPassTableTab($tab),
+    ]);
+}
+
 function formatEventPassHistorySummary(array $summary): string
 {
     if ($summary === []) {
@@ -908,7 +951,15 @@ $pdo = null;
 $events = [];
 $registrations = [];
 $historySummaries = [];
+$deliveryStates = [];
+$eventPassTabCounts = [
+    'total' => 0,
+    'pending' => 0,
+    'email_sent' => 0,
+    'whatsapp_sent' => 0,
+];
 $selectedEventId = 0;
+$selectedTableTab = normalizeEventPassTableTab((string) ($_POST['active_tab'] ?? $_GET['tab'] ?? 'total'));
 $messageBody = "Dear Educator,\nGreetings!\nPlease find attached your unique Event Pass. Kindly download it and present it at the Registration Desk on the day of the event to mark your attendance.\nWe look forward to welcoming you to the event.\nThanks";
 $adminError = (string) ($_SESSION['admin_error'] ?? '');
 $adminSuccess = $_SESSION['admin_success'] ?? '';
@@ -957,7 +1008,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
             }
             $_SESSION['admin_success'] = $generated > 0 ? 'Generated ' . $generated . ' Event Pass(es).' : 'No Event Passes were generated.';
-            header('Location: ' . buildUrl('admin/event_pass.php') . '?event=' . $selectedEventId);
+            header('Location: ' . buildEventPassPageUrl($selectedEventId, $selectedTableTab));
             exit;
         }
     } elseif ($action === 'send_email' || $action === 'send_email_all' || $action === 'ajax_send_email') {
@@ -1067,7 +1118,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['admin_error'] = ($sent === 0 ? 'No emails were sent. ' : 'Some emails could not be sent. ')
                 . implode(' ', $emailErrors);
         }
-        header('Location: ' . buildUrl('admin/event_pass.php') . '?event=' . $selectedEventId);
+        header('Location: ' . buildEventPassPageUrl($selectedEventId, $selectedTableTab));
         exit;
     } elseif ($action === 'send_whatsapp' || $action === 'send_whatsapp_all' || $action === 'ajax_send_whatsapp') {
         if ($action === 'ajax_send_whatsapp' && !isAjaxRequest()) {
@@ -1208,7 +1259,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $_SESSION['admin_error'] = ($sent === 0 ? 'No WhatsApp messages were sent. ' : 'Some messages could not be sent. ')
                 . implode(' ', $whatsappErrors);
         }
-        header('Location: ' . buildUrl('admin/event_pass.php') . '?event=' . $selectedEventId);
+        header('Location: ' . buildEventPassPageUrl($selectedEventId, $selectedTableTab));
         exit;
     }
 }
@@ -1220,6 +1271,37 @@ if (isset($_GET['event']) && $pdo !== null) {
 if ($selectedEventId > 0 && $pdo !== null) {
     $registrations = getRegistrationsForEvent($pdo, $selectedEventId);
     $historySummaries = getEventPassHistorySummaries($pdo, $selectedEventId);
+    $deliveryStates = getEventPassDeliveryStates($pdo, $selectedEventId);
+
+    $eventPassTabCounts['total'] = count($registrations);
+    foreach ($registrations as &$registration) {
+        $registrationId = (int) ($registration['registration_id'] ?? 0);
+        $eventId = (int) ($registration['event_id'] ?? $selectedEventId);
+        $hasQrCode = $registrationId > 0
+            && isQrCodeWithinMaximumSize(buildQrFilePath($eventId, $registrationId));
+        $emailSent = (bool) ($deliveryStates[$registrationId]['email'] ?? false);
+        $whatsappSent = (bool) ($deliveryStates[$registrationId]['whatsapp'] ?? false);
+        $historyTimes = [
+            strtotime((string) ($historySummaries[$registrationId]['email']['last_at'] ?? '')) ?: 0,
+            strtotime((string) ($historySummaries[$registrationId]['whatsapp']['last_at'] ?? '')) ?: 0,
+        ];
+
+        $registration['_event_pass_has_qr'] = $hasQrCode;
+        $registration['_event_pass_email_sent'] = $emailSent;
+        $registration['_event_pass_whatsapp_sent'] = $whatsappSent;
+        $registration['_event_pass_history_timestamp'] = max($historyTimes);
+
+        if (!$hasQrCode) {
+            $eventPassTabCounts['pending']++;
+        }
+        if ($emailSent) {
+            $eventPassTabCounts['email_sent']++;
+        }
+        if ($whatsappSent) {
+            $eventPassTabCounts['whatsapp_sent']++;
+        }
+    }
+    unset($registration);
 }
 
 function getRegistrationById(PDO $pdo, int $registrationId): ?array
@@ -1291,6 +1373,7 @@ ob_start();
         <form method="post" class="qr-workspace">
             <input type="hidden" name="action" value="generate_qr">
             <input type="hidden" name="event_id" value="<?php echo (int) $selectedEventId; ?>">
+            <input type="hidden" id="event-pass-active-tab" name="active_tab" value="<?php echo htmlspecialchars($selectedTableTab, ENT_QUOTES, 'UTF-8'); ?>">
 
             <div class="qr-compose">
                 <div class="qr-field">
@@ -1330,34 +1413,99 @@ ob_start();
                 </div>
                 <span class="qr-count"><?php echo count($registrations); ?> total</span>
             </div>
+            <nav class="event-pass-tabs" aria-label="Candidate pass delivery status">
+                <a class="event-pass-tab<?php echo $selectedTableTab === 'total' ? ' active' : ''; ?>" href="<?php echo htmlspecialchars(buildEventPassPageUrl($selectedEventId, 'total'), ENT_QUOTES, 'UTF-8'); ?>"<?php echo $selectedTableTab === 'total' ? ' aria-current="page"' : ''; ?> data-pass-tab="total">
+                    Total <span><?php echo $eventPassTabCounts['total']; ?></span>
+                </a>
+                <a class="event-pass-tab<?php echo $selectedTableTab === 'pending' ? ' active' : ''; ?>" href="<?php echo htmlspecialchars(buildEventPassPageUrl($selectedEventId, 'pending'), ENT_QUOTES, 'UTF-8'); ?>"<?php echo $selectedTableTab === 'pending' ? ' aria-current="page"' : ''; ?> data-pass-tab="pending">
+                    Pending <span><?php echo $eventPassTabCounts['pending']; ?></span>
+                </a>
+                <a class="event-pass-tab<?php echo $selectedTableTab === 'email_sent' ? ' active' : ''; ?>" href="<?php echo htmlspecialchars(buildEventPassPageUrl($selectedEventId, 'email_sent'), ENT_QUOTES, 'UTF-8'); ?>"<?php echo $selectedTableTab === 'email_sent' ? ' aria-current="page"' : ''; ?> data-pass-tab="email_sent">
+                    Email Sent <span><?php echo $eventPassTabCounts['email_sent']; ?></span>
+                </a>
+                <a class="event-pass-tab<?php echo $selectedTableTab === 'whatsapp_sent' ? ' active' : ''; ?>" href="<?php echo htmlspecialchars(buildEventPassPageUrl($selectedEventId, 'whatsapp_sent'), ENT_QUOTES, 'UTF-8'); ?>"<?php echo $selectedTableTab === 'whatsapp_sent' ? ' aria-current="page"' : ''; ?> data-pass-tab="whatsapp_sent">
+                    WhatsApp Sent <span><?php echo $eventPassTabCounts['whatsapp_sent']; ?></span>
+                </a>
+            </nav>
             <?php if (!empty($registrations)): ?>
+                <div class="event-pass-table-controls">
+                    <label class="event-pass-table-search" for="event-pass-search">
+                        <span>Search candidates</span>
+                        <input id="event-pass-search" type="search" autocomplete="off" placeholder="Name, email, phone, pass code, or ID">
+                    </label>
+                    <p id="event-pass-result-count" class="event-pass-result-count" role="status" aria-live="polite"></p>
+                </div>
                 <div class="qr-table-wrap">
-                    <table class="qr-table">
+                    <table id="event-pass-table" class="qr-table">
                         <thead>
                             <tr>
-                                <th><input type="checkbox" id="select-all" aria-label="Select all candidates" onchange="document.querySelectorAll('.candidate-checkbox').forEach(cb => cb.checked = this.checked)"></th>
-                                <th>ID</th><th>Pass Code</th><th>Candidate</th><th>Email</th><th>WhatsApp</th><th>Status</th><th>History</th><th>Actions</th>
+                                <th><input type="checkbox" id="select-all" aria-label="Select visible candidates"></th>
+                                <th aria-sort="none"><button type="button" class="event-pass-sort" data-pass-sort="id">ID</button></th>
+                                <th aria-sort="none"><button type="button" class="event-pass-sort" data-pass-sort="pass-code">Pass Code</button></th>
+                                <th aria-sort="none"><button type="button" class="event-pass-sort" data-pass-sort="candidate">Candidate</button></th>
+                                <th aria-sort="none"><button type="button" class="event-pass-sort" data-pass-sort="email">Email</button></th>
+                                <th aria-sort="none"><button type="button" class="event-pass-sort" data-pass-sort="whatsapp">WhatsApp</button></th>
+                                <th aria-sort="none"><button type="button" class="event-pass-sort" data-pass-sort="status">Status</button></th>
+                                <th aria-sort="none"><button type="button" class="event-pass-sort" data-pass-sort="history">History</button></th>
+                                <th>Actions</th>
                             </tr>
                         </thead>
                         <tbody>
                             <?php foreach ($registrations as $registration): ?>
-                                <?php $registrationId = (int) $registration['registration_id']; ?>
-                                <tr>
-                                    <td><input class="candidate-checkbox" type="checkbox" name="registration_ids[]" aria-label="Select <?php echo htmlspecialchars((string) ($registration['name'] ?? 'candidate'), ENT_QUOTES, 'UTF-8'); ?>" value="<?php echo $registrationId; ?>"></td>
+                                <?php
+                                $registrationId = (int) $registration['registration_id'];
+                                $qrIsReady = (bool) ($registration['_event_pass_has_qr'] ?? false);
+                                $emailWasSent = (bool) ($registration['_event_pass_email_sent'] ?? false);
+                                $whatsappWasSent = (bool) ($registration['_event_pass_whatsapp_sent'] ?? false);
+                                $qrPath = buildQrFilePath((int) $registration['event_id'], $registrationId);
+                                $passCode = trim((string) ($registration['pass_code'] ?? ''));
+                                $candidateName = (string) ($registration['name'] ?? '');
+                                $emailAddress = (string) ($registration['official_email'] ?? '');
+                                $whatsappNumber = (string) ($registration['whatsapp_number'] ?? '');
+                                $statusText = $qrIsReady ? 'Pass ready' : 'QR pending';
+                                $historyText = formatEventPassHistorySummary($historySummaries[$registrationId] ?? []);
+                                $searchText = implode(' ', [
+                                    (string) $registrationId,
+                                    $passCode,
+                                    $candidateName,
+                                    $emailAddress,
+                                    $whatsappNumber,
+                                    $statusText,
+                                    $emailWasSent ? 'Email sent' : '',
+                                    $whatsappWasSent ? 'WhatsApp sent' : '',
+                                    $historyText,
+                                ]);
+                                $matchesSelectedTab = $selectedTableTab === 'total'
+                                    || ($selectedTableTab === 'pending' && !$qrIsReady)
+                                    || ($selectedTableTab === 'email_sent' && $emailWasSent)
+                                    || ($selectedTableTab === 'whatsapp_sent' && $whatsappWasSent);
+                                ?>
+                                <tr class="event-pass-row"<?php echo $matchesSelectedTab ? '' : ' hidden'; ?>
+                                    data-pass-pending="<?php echo $qrIsReady ? '0' : '1'; ?>"
+                                    data-email-sent="<?php echo $emailWasSent ? '1' : '0'; ?>"
+                                    data-whatsapp-sent="<?php echo $whatsappWasSent ? '1' : '0'; ?>"
+                                    data-sort-id="<?php echo $registrationId; ?>"
+                                    data-sort-pass-code="<?php echo htmlspecialchars($passCode, ENT_QUOTES, 'UTF-8'); ?>"
+                                    data-sort-candidate="<?php echo htmlspecialchars($candidateName, ENT_QUOTES, 'UTF-8'); ?>"
+                                    data-sort-email="<?php echo htmlspecialchars($emailAddress, ENT_QUOTES, 'UTF-8'); ?>"
+                                    data-sort-whatsapp="<?php echo htmlspecialchars($whatsappNumber, ENT_QUOTES, 'UTF-8'); ?>"
+                                    data-sort-status="<?php echo htmlspecialchars($statusText, ENT_QUOTES, 'UTF-8'); ?>"
+                                    data-sort-history="<?php echo (int) ($registration['_event_pass_history_timestamp'] ?? 0); ?>"
+                                    data-search="<?php echo htmlspecialchars($searchText, ENT_QUOTES, 'UTF-8'); ?>">
+                                    <td><input class="candidate-checkbox" type="checkbox" name="registration_ids[]" aria-label="Select <?php echo htmlspecialchars($candidateName !== '' ? $candidateName : 'candidate', ENT_QUOTES, 'UTF-8'); ?>" value="<?php echo $registrationId; ?>"<?php echo $matchesSelectedTab ? '' : ' disabled'; ?>></td>
                                     <td><span class="qr-id">#<?php echo $registrationId; ?></span></td>
-                                    <td><strong><?php echo htmlspecialchars((string) (($registration['pass_code'] ?? '') ?: '—'), ENT_QUOTES, 'UTF-8'); ?></strong></td>
-                                    <td><strong><?php echo htmlspecialchars((string) ($registration['name'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></strong></td>
-                                    <td><?php echo htmlspecialchars((string) ($registration['official_email'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
-                                    <td><?php echo htmlspecialchars((string) ($registration['whatsapp_number'] ?? ''), ENT_QUOTES, 'UTF-8'); ?></td>
+                                    <td><strong><?php echo htmlspecialchars($passCode !== '' ? $passCode : '—', ENT_QUOTES, 'UTF-8'); ?></strong></td>
+                                    <td><strong><?php echo htmlspecialchars($candidateName, ENT_QUOTES, 'UTF-8'); ?></strong></td>
+                                    <td><?php echo htmlspecialchars($emailAddress, ENT_QUOTES, 'UTF-8'); ?></td>
+                                    <td><?php echo htmlspecialchars($whatsappNumber, ENT_QUOTES, 'UTF-8'); ?></td>
                                     <td>
-                                        <?php $qrPath = buildQrFilePath((int) $registration['event_id'], $registrationId); ?>
-                                        <?php if (is_file($qrPath)): ?>
+                                        <?php if ($qrIsReady): ?>
                                             <a class="qr-status ready" href="<?php echo htmlspecialchars(buildUrl('assets/images/QR/' . basename($qrPath)), ENT_QUOTES, 'UTF-8'); ?>" target="_blank" rel="noopener">View Pass</a>
                                         <?php else: ?>
                                             <span class="qr-status pending">Not generated</span>
                                         <?php endif; ?>
                                     </td>
-                                    <td><?php echo htmlspecialchars(formatEventPassHistorySummary($historySummaries[$registrationId] ?? []), ENT_QUOTES, 'UTF-8'); ?></td>
+                                    <td><?php echo htmlspecialchars($historyText, ENT_QUOTES, 'UTF-8'); ?></td>
                                     <td>
                                         <button type="button" class="qr-button qr-button-secondary ajax-qr-send" data-action="ajax_send_email" data-registration-id="<?php echo $registrationId; ?>">Email</button>
                                         <button type="button" class="qr-button qr-button-secondary ajax-qr-send" data-action="ajax_send_whatsapp" data-registration-id="<?php echo $registrationId; ?>">WhatsApp</button>
@@ -1367,12 +1515,204 @@ ob_start();
                         </tbody>
                     </table>
                 </div>
+                <p id="event-pass-no-results" class="event-pass-no-results"<?php echo $eventPassTabCounts[$selectedTableTab] > 0 ? ' hidden' : ''; ?>>No candidates match this tab and search.</p>
                 <script>
                     (function () {
                         const workspaceForm = document.querySelector('.qr-workspace');
                         if (!workspaceForm) {
                             return;
                         }
+
+                        const table = workspaceForm.querySelector('#event-pass-table');
+                        if (!table || !table.tBodies.length) {
+                            return;
+                        }
+
+                        const tableBody = table.tBodies[0];
+                        const rows = Array.from(tableBody.querySelectorAll('.event-pass-row'));
+                        const tabButtons = Array.from(workspaceForm.querySelectorAll('[data-pass-tab]'));
+                        const sortButtons = Array.from(workspaceForm.querySelectorAll('[data-pass-sort]'));
+                        const searchInput = workspaceForm.querySelector('#event-pass-search');
+                        const resultCount = workspaceForm.querySelector('#event-pass-result-count');
+                        const noResults = workspaceForm.querySelector('#event-pass-no-results');
+                        const selectAll = workspaceForm.querySelector('#select-all');
+                        const activeTabInput = workspaceForm.querySelector('#event-pass-active-tab');
+                        const allowedTabs = ['total', 'pending', 'email_sent', 'whatsapp_sent'];
+                        const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+                        let activeTab = activeTabInput && allowedTabs.includes(activeTabInput.value)
+                            ? activeTabInput.value
+                            : 'total';
+                        let sortState = { key: 'id', direction: 'asc' };
+
+                        function getVisibleCheckboxes() {
+                            return rows
+                                .filter(row => !row.hidden)
+                                .map(row => row.querySelector('.candidate-checkbox'))
+                                .filter(Boolean);
+                        }
+
+                        function updateSelectAllState() {
+                            if (!selectAll) {
+                                return;
+                            }
+
+                            const visibleCheckboxes = getVisibleCheckboxes();
+                            const checkedCount = visibleCheckboxes.filter(checkbox => checkbox.checked).length;
+                            selectAll.disabled = visibleCheckboxes.length === 0;
+                            selectAll.checked = visibleCheckboxes.length > 0 && checkedCount === visibleCheckboxes.length;
+                            selectAll.indeterminate = checkedCount > 0 && checkedCount < visibleCheckboxes.length;
+                        }
+
+                        function rowMatchesTab(row) {
+                            if (activeTab === 'pending') {
+                                return row.dataset.passPending === '1';
+                            }
+                            if (activeTab === 'email_sent') {
+                                return row.dataset.emailSent === '1';
+                            }
+                            if (activeTab === 'whatsapp_sent') {
+                                return row.dataset.whatsappSent === '1';
+                            }
+                            return true;
+                        }
+
+                        function applyFilters() {
+                            const searchTerm = (searchInput ? searchInput.value : '').trim().toLocaleLowerCase();
+                            let visibleCount = 0;
+
+                            rows.forEach(row => {
+                                const searchMatches = searchTerm === ''
+                                    || (row.dataset.search || '').toLocaleLowerCase().includes(searchTerm);
+                                const isVisible = rowMatchesTab(row) && searchMatches;
+                                row.hidden = !isVisible;
+                                const checkbox = row.querySelector('.candidate-checkbox');
+                                if (checkbox) {
+                                    checkbox.disabled = !isVisible;
+                                }
+                                if (isVisible) {
+                                    visibleCount++;
+                                }
+                            });
+
+                            if (resultCount) {
+                                const candidateLabel = visibleCount === 1 ? 'candidate' : 'candidates';
+                                resultCount.textContent = 'Showing ' + visibleCount + ' of ' + rows.length + ' ' + candidateLabel;
+                            }
+                            if (noResults) {
+                                noResults.hidden = visibleCount !== 0;
+                            }
+                            updateSelectAllState();
+                        }
+
+                        function updateSortControls() {
+                            sortButtons.forEach(button => {
+                                const isCurrentSort = button.dataset.passSort === sortState.key;
+                                const header = button.closest('th');
+                                button.dataset.direction = isCurrentSort ? sortState.direction : '';
+                                if (header) {
+                                    header.setAttribute('aria-sort', isCurrentSort
+                                        ? (sortState.direction === 'asc' ? 'ascending' : 'descending')
+                                        : 'none');
+                                }
+                            });
+                        }
+
+                        function compareRows(firstRow, secondRow) {
+                            const firstValue = firstRow.getAttribute('data-sort-' + sortState.key) || '';
+                            const secondValue = secondRow.getAttribute('data-sort-' + sortState.key) || '';
+                            const numericSort = ['id', 'pass-code', 'history'].includes(sortState.key);
+                            let comparison;
+
+                            if (numericSort) {
+                                comparison = Number(firstValue || 0) - Number(secondValue || 0);
+                            } else {
+                                comparison = collator.compare(firstValue, secondValue);
+                            }
+
+                            if (comparison === 0) {
+                                comparison = Number(firstRow.dataset.sortId || 0) - Number(secondRow.dataset.sortId || 0);
+                            }
+                            return sortState.direction === 'asc' ? comparison : -comparison;
+                        }
+
+                        function sortAndFilter() {
+                            rows.sort(compareRows).forEach(row => tableBody.appendChild(row));
+                            updateSortControls();
+                            applyFilters();
+                        }
+
+                        function updateTabUrl() {
+                            const eventId = workspaceForm.querySelector('input[name="event_id"]').value;
+                            if (!eventId || !window.history || !window.history.replaceState) {
+                                return;
+                            }
+
+                            const url = new URL(window.location.href);
+                            url.searchParams.set('event', eventId);
+                            url.searchParams.set('tab', activeTab);
+                            window.history.replaceState({}, '', url.toString());
+                        }
+
+                        function setActiveTab(tab, updateUrl) {
+                            activeTab = allowedTabs.includes(tab) ? tab : 'total';
+                            if (activeTabInput) {
+                                activeTabInput.value = activeTab;
+                            }
+                            tabButtons.forEach(button => {
+                                const isActive = button.dataset.passTab === activeTab;
+                                button.classList.toggle('active', isActive);
+                                if (isActive) {
+                                    button.setAttribute('aria-current', 'page');
+                                } else {
+                                    button.removeAttribute('aria-current');
+                                }
+                            });
+                            if (updateUrl) {
+                                updateTabUrl();
+                            }
+                            applyFilters();
+                        }
+
+                        tabButtons.forEach(button => {
+                            button.addEventListener('click', event => {
+                                event.preventDefault();
+                                setActiveTab(button.dataset.passTab || 'total', true);
+                            });
+                        });
+                        sortButtons.forEach(button => {
+                            button.addEventListener('click', () => {
+                                const sortKey = button.dataset.passSort || 'id';
+                                sortState = sortState.key === sortKey
+                                    ? { key: sortKey, direction: sortState.direction === 'asc' ? 'desc' : 'asc' }
+                                    : { key: sortKey, direction: 'asc' };
+                                sortAndFilter();
+                            });
+                        });
+                        if (searchInput) {
+                            searchInput.addEventListener('input', applyFilters);
+                            searchInput.addEventListener('keydown', event => {
+                                if (event.key === 'Enter') {
+                                    event.preventDefault();
+                                }
+                            });
+                        }
+                        if (selectAll) {
+                            selectAll.addEventListener('change', () => {
+                                getVisibleCheckboxes().forEach(checkbox => {
+                                    checkbox.checked = selectAll.checked;
+                                });
+                                updateSelectAllState();
+                            });
+                        }
+                        rows.forEach(row => {
+                            const checkbox = row.querySelector('.candidate-checkbox');
+                            if (checkbox) {
+                                checkbox.addEventListener('change', updateSelectAllState);
+                            }
+                        });
+
+                        updateSortControls();
+                        setActiveTab(activeTab, false);
 
                         const buttons = workspaceForm.querySelectorAll('.ajax-qr-send');
                         buttons.forEach(button => {
@@ -1396,6 +1736,7 @@ ob_start();
                                 formData.append('event_id', eventId);
                                 formData.append('message_body', messageBody);
                                 formData.append('registration_ids[]', registrationId);
+                                formData.append('active_tab', activeTab);
 
                                 try {
                                     const response = await fetch(window.location.href, {
@@ -1407,7 +1748,10 @@ ob_start();
                                     });
                                     const data = await response.json();
                                     if (response.ok && data.success) {
-                                        window.location.reload();
+                                        const reloadUrl = new URL(window.location.href);
+                                        reloadUrl.searchParams.set('event', eventId);
+                                        reloadUrl.searchParams.set('tab', activeTab);
+                                        window.location.assign(reloadUrl.pathname + reloadUrl.search + reloadUrl.hash);
                                     } else {
                                         alert('Send failed: ' + (data.message || (data.errors ? data.errors.join(' ') : 'Unknown error.')));
                                         this.disabled = false;

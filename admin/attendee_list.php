@@ -125,14 +125,17 @@ SQL);
         $summary['approved_count'] = (int) $approvedStatement->fetchColumn();
     }
 
-    if ($attendanceTableExists) {
+    if ($attendanceTableExists && $registrationTableExists) {
         $attendanceStatement = $pdo->prepare(<<<'SQL'
             SELECT
                 COUNT(*) AS checked_in_count,
                 COALESCE(MAX(attendance_id), 0) AS latest_attendance_id,
                 MAX(checked_in_at) AS latest_checked_in_at
-            FROM event_attendance
-            WHERE event_id = :event_id
+            FROM event_attendance ea
+            INNER JOIN event_registrations er
+                ON er.registration_id = ea.registration_id
+               AND er.event_id = ea.event_id
+            WHERE ea.event_id = :event_id
 SQL);
         $attendanceStatement->execute([':event_id' => $eventId]);
         $attendance = $attendanceStatement->fetch() ?: [];
@@ -346,7 +349,13 @@ function attendeeListExportDocx(array $event, array $attendees, array $summary):
     exit;
 }
 
-function attendeeListExportPdf(array $event, array $attendees, array $summary): void
+function attendeeListBuildPdfHtml(
+    array $event,
+    array $attendees,
+    array $summary,
+    bool $showPrintActions = false,
+    bool $autoPrint = false
+): string
 {
     $eventTitle = attendeeListValue($event['event_title'] ?? '', 'Event');
     $eventDate = attendeeListFormatDate($event['start_date'] ?? '', 'd M Y');
@@ -355,8 +364,7 @@ function attendeeListExportPdf(array $event, array $attendees, array $summary): 
         trim((string) ($event['venue_name'] ?? '')),
     ], static fn (string $value): bool => $value !== '');
 
-    header('Content-Type: text/html; charset=UTF-8');
-    header('Cache-Control: private, max-age=0, must-revalidate');
+    ob_start();
     ?>
 <!doctype html>
 <html lang="en">
@@ -396,7 +404,7 @@ function attendeeListExportPdf(array $event, array $attendees, array $summary): 
     </style>
 </head>
 <body>
-    <div class="print-actions"><button type="button" onclick="window.print()">Save as PDF</button></div>
+    <?php if ($showPrintActions): ?><div class="print-actions"><button type="button" onclick="window.print()">Save as PDF</button></div><?php endif; ?>
     <main class="sheet">
         <header class="sheet-header">
             <div>
@@ -428,10 +436,210 @@ function attendeeListExportPdf(array $event, array $attendees, array $summary): 
         </table>
         <div class="footer">Generated <?php echo htmlspecialchars(date('d M Y, h:i A'), ENT_QUOTES, 'UTF-8'); ?> · Approved registrations: <?php echo number_format((int) ($summary['approved_count'] ?? 0)); ?></div>
     </main>
-    <script>window.addEventListener('load', function () { window.print(); });</script>
+    <?php if ($autoPrint): ?><script>window.addEventListener('load', function () { window.print(); });</script><?php endif; ?>
 </body>
 </html>
 <?php
+    return (string) ob_get_clean();
+}
+
+function attendeeListFindPdfBrowser(): ?string
+{
+    $candidates = [];
+    $configuredBrowser = trim((string) getenv('EMS_PDF_BROWSER'));
+    if ($configuredBrowser !== '') {
+        $candidates[] = $configuredBrowser;
+    }
+
+    foreach (['PROGRAMFILES', 'PROGRAMFILES(X86)', 'LOCALAPPDATA'] as $environmentVariable) {
+        $basePath = trim((string) getenv($environmentVariable));
+        if ($basePath === '') {
+            continue;
+        }
+
+        $candidates[] = $basePath . DIRECTORY_SEPARATOR . 'Google' . DIRECTORY_SEPARATOR . 'Chrome' . DIRECTORY_SEPARATOR . 'Application' . DIRECTORY_SEPARATOR . 'chrome.exe';
+        $candidates[] = $basePath . DIRECTORY_SEPARATOR . 'Microsoft' . DIRECTORY_SEPARATOR . 'Edge' . DIRECTORY_SEPARATOR . 'Application' . DIRECTORY_SEPARATOR . 'msedge.exe';
+    }
+
+    $candidates = array_merge($candidates, [
+        '/usr/bin/google-chrome',
+        '/usr/bin/chromium',
+        '/usr/bin/chromium-browser',
+    ]);
+
+    foreach (array_unique($candidates) as $candidate) {
+        if (is_file($candidate)) {
+            return $candidate;
+        }
+    }
+
+    return null;
+}
+
+function attendeeListPdfFileUrl(string $path): string
+{
+    $path = ltrim(str_replace('\\', '/', $path), '/');
+    $parts = array_map(
+        static fn (string $part): string => str_replace('%3A', ':', rawurlencode($part)),
+        explode('/', $path)
+    );
+
+    return 'file:///' . implode('/', $parts);
+}
+
+function attendeeListRemoveTemporaryPdfDirectory(string $directory): void
+{
+    $temporaryRoot = realpath(sys_get_temp_dir());
+    $resolvedDirectory = realpath($directory);
+    if ($temporaryRoot === false || $resolvedDirectory === false) {
+        return;
+    }
+
+    $expectedPrefix = rtrim($temporaryRoot, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'ems-attendee-pdf-profile-';
+    $matchesPrefix = DIRECTORY_SEPARATOR === '\\'
+        ? strncasecmp($resolvedDirectory, $expectedPrefix, strlen($expectedPrefix)) === 0
+        : strncmp($resolvedDirectory, $expectedPrefix, strlen($expectedPrefix)) === 0;
+    if (!$matchesPrefix) {
+        return;
+    }
+
+    try {
+        $iterator = new RecursiveIteratorIterator(
+            new RecursiveDirectoryIterator($resolvedDirectory, FilesystemIterator::SKIP_DOTS),
+            RecursiveIteratorIterator::CHILD_FIRST
+        );
+        foreach ($iterator as $entry) {
+            if ($entry->isLink() || $entry->isFile()) {
+                @unlink($entry->getPathname());
+            } elseif ($entry->isDir()) {
+                @rmdir($entry->getPathname());
+            }
+        }
+    } catch (UnexpectedValueException) {
+        // A browser may already have removed a transient profile file.
+    }
+
+    @rmdir($resolvedDirectory);
+}
+
+function attendeeListGeneratePdf(string $html): ?string
+{
+    $browser = attendeeListFindPdfBrowser();
+    if ($browser === null || !function_exists('proc_open')) {
+        return null;
+    }
+
+    $htmlSeed = false;
+    $pdfSeed = false;
+    $profileSeed = false;
+    $htmlFile = null;
+    $pdfFile = null;
+    $profileDirectory = null;
+    $stdoutFile = null;
+    $stderrFile = null;
+    $process = null;
+
+    try {
+        $htmlSeed = tempnam(sys_get_temp_dir(), 'ems-attendee-pdf-');
+        $pdfSeed = tempnam(sys_get_temp_dir(), 'ems-attendee-pdf-');
+        $profileSeed = tempnam(sys_get_temp_dir(), 'ems-attendee-pdf-profile-');
+        if ($htmlSeed === false || $pdfSeed === false || $profileSeed === false) {
+            return null;
+        }
+
+        $htmlFile = $htmlSeed . '.html';
+        $pdfFile = $pdfSeed . '.pdf';
+        $profileDirectory = $profileSeed;
+        if (!@rename($htmlSeed, $htmlFile) || !@rename($pdfSeed, $pdfFile) || !@unlink($pdfFile) || !@unlink($profileSeed) || !@mkdir($profileDirectory, 0700)) {
+            return null;
+        }
+        if (@file_put_contents($htmlFile, $html, LOCK_EX) === false) {
+            return null;
+        }
+
+        $stdoutFile = $pdfFile . '.stdout.log';
+        $stderrFile = $pdfFile . '.stderr.log';
+        $process = @proc_open(
+            [
+                $browser,
+                '--headless',
+                '--disable-gpu',
+                '--disable-background-networking',
+                '--no-first-run',
+                '--no-default-browser-check',
+                '--no-pdf-header-footer',
+                '--run-all-compositor-stages-before-draw',
+                '--user-data-dir=' . $profileDirectory,
+                '--print-to-pdf=' . $pdfFile,
+                attendeeListPdfFileUrl($htmlFile),
+            ],
+            [
+                0 => ['pipe', 'r'],
+                1 => ['file', $stdoutFile, 'a'],
+                2 => ['file', $stderrFile, 'a'],
+            ],
+            $pipes,
+            null,
+            null,
+            ['bypass_shell' => true]
+        );
+        if (!is_resource($process)) {
+            return null;
+        }
+        if (isset($pipes[0]) && is_resource($pipes[0])) {
+            fclose($pipes[0]);
+        }
+
+        $deadline = microtime(true) + 20;
+        do {
+            $status = proc_get_status($process);
+            if (!is_array($status) || !($status['running'] ?? false)) {
+                break;
+            }
+            usleep(100000);
+        } while (microtime(true) < $deadline);
+
+        if (is_array($status) && ($status['running'] ?? false)) {
+            @proc_terminate($process);
+        }
+        @proc_close($process);
+        $process = null;
+
+        $pdf = is_file($pdfFile) ? @file_get_contents($pdfFile) : false;
+        return is_string($pdf) && str_starts_with($pdf, '%PDF-') ? $pdf : null;
+    } catch (Throwable) {
+        return null;
+    } finally {
+        if (is_resource($process)) {
+            @proc_terminate($process);
+            @proc_close($process);
+        }
+        foreach ([$htmlSeed, $htmlFile, $pdfSeed, $pdfFile, $stdoutFile, $stderrFile] as $temporaryFile) {
+            if (is_string($temporaryFile) && is_file($temporaryFile)) {
+                @unlink($temporaryFile);
+            }
+        }
+        if (is_string($profileDirectory)) {
+            attendeeListRemoveTemporaryPdfDirectory($profileDirectory);
+        }
+    }
+}
+
+function attendeeListExportPdf(array $event, array $attendees, array $summary): void
+{
+    $pdf = attendeeListGeneratePdf(attendeeListBuildPdfHtml($event, $attendees, $summary));
+    if ($pdf !== null) {
+        header('Content-Type: application/pdf');
+        header('Content-Disposition: attachment; filename="' . attendeeListDownloadFilename($event, 'pdf') . '"');
+        header('Content-Length: ' . (string) strlen($pdf));
+        header('Cache-Control: private, max-age=0, must-revalidate');
+        echo $pdf;
+        exit;
+    }
+
+    header('Content-Type: text/html; charset=UTF-8');
+    header('Cache-Control: private, max-age=0, must-revalidate');
+    echo attendeeListBuildPdfHtml($event, $attendees, $summary, true, true);
     exit;
 }
 
@@ -508,7 +716,7 @@ if ($selectedEvent && in_array($export, ['docx', 'pdf'], true)) {
             attendeeListExportDocx($selectedEvent, $payload['attendees'], $payload['summary']);
         }
         attendeeListExportPdf($selectedEvent, $payload['attendees'], $payload['summary']);
-} catch (Throwable $exception) {
+    } catch (Throwable $exception) {
         $error = 'Unable to create the ' . strtoupper($export) . ' export. Please try again.';
     }
 }
