@@ -1,5 +1,4 @@
 RewriteEngine On
-RewriteBase /ems/
 DirectorySlash Off
 
 # Serve the supported playback formats with explicit audio media types. This

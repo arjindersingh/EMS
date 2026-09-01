@@ -329,6 +329,16 @@ function isQrCodeWithinMaximumSize(string $path): bool
     return $imageInfo !== false && $imageInfo[0] <= 200 && $imageInfo[1] <= 200;
 }
 
+function fetchQrImageContents(string $url): ?string
+{
+    // Use the stream wrapper rather than cURL: on this host cURL's SSL
+    // verification fails (no curl.cainfo configured), while the stream
+    // wrapper's OpenSSL context resolves the system CA store fine.
+    $context = stream_context_create(['http' => ['method' => 'GET', 'timeout' => 8, 'ignore_errors' => true]]);
+    $result = @file_get_contents($url, false, $context);
+    return $result !== false && $result !== '' ? $result : null;
+}
+
 function generateQrCode(string $payload, string $outputPath): bool
 {
     // Keep every generated pass QR within the 200 x 200 pixel limit.
@@ -340,8 +350,8 @@ function generateQrCode(string $payload, string $outputPath): bool
     ];
 
     foreach ($urls as $url) {
-        $contents = @file_get_contents($url);
-        if ($contents !== false && $contents !== '') {
+        $contents = fetchQrImageContents($url);
+        if ($contents !== null) {
             $imageInfo = @getimagesizefromstring($contents);
             if ($imageInfo !== false && $imageInfo[0] <= $maxQrDimension && $imageInfo[1] <= $maxQrDimension) {
                 file_put_contents($outputPath, $contents);
@@ -980,6 +990,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
     $selectedEventId = (int) ($_POST['event_id'] ?? 0);
     $messageBody = trim((string) ($_POST['message_body'] ?? $messageBody));
+
+    $bulkActions = ['generate_qr', 'generate_qr_all', 'send_email', 'send_email_all', 'ajax_send_email', 'send_whatsapp', 'send_whatsapp_all', 'ajax_send_whatsapp'];
+    if (in_array($action, $bulkActions, true)) {
+        // Bulk delivery loops over every registration and makes an external
+        // HTTP call per row (QR image, SMTP, WhatsApp API) — that can easily
+        // exceed the default max_execution_time on a large event roster.
+        set_time_limit(0);
+    }
 
     if ($action === 'load_event') {
         $selectedEventId = (int) ($_POST['event_id'] ?? 0);
