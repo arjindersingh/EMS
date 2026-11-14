@@ -8,6 +8,8 @@ Event Management System
 - Apache via Docker Compose
 
 ## Setup
+Run the following commands from the repository root.
+
 1. Copy `.env.example` to `.env`.
 2. Run:
    ```bash
