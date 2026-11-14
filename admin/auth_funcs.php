@@ -14,10 +14,13 @@ function ensureAdminUsersTable(PDO $pdo): void
             email VARCHAR(191) NOT NULL UNIQUE,
             password_hash VARCHAR(255) NOT NULL,
             role VARCHAR(50) NOT NULL DEFAULT 'admin',
+            role_id INT NULL,
+            assigned_event_id INT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             INDEX idx_admin_users_email (email),
-            INDEX idx_admin_users_username (username)
+            INDEX idx_admin_users_username (username),
+            INDEX idx_admin_users_role_id (role_id)
         )
 SQL
     );
@@ -45,9 +48,20 @@ function getAdminUsersCount(PDO $pdo): int
 function getAdminUserByLogin(PDO $pdo, string $login): ?array
 {
     $statement = $pdo->prepare(<<<'SQL'
-        SELECT admin_user_id, name, username, email, password_hash, role
-        FROM admin_users
-        WHERE username = :login_username OR email = :login_email
+        SELECT
+            au.admin_user_id,
+            au.name,
+            au.username,
+            au.email,
+            au.password_hash,
+            au.role,
+            au.role_id,
+            au.assigned_event_id,
+            r.role_name,
+            r.event_assigned
+        FROM admin_users au
+        LEFT JOIN roles r ON au.role_id = r.role_id
+        WHERE au.username = :login_username OR au.email = :login_email
         LIMIT 1
 SQL
     );
@@ -82,7 +96,24 @@ function adminUserExists(PDO $pdo, string $username, string $email, ?int $exclud
 
 function getAllAdminUsers(PDO $pdo): array
 {
-    $statement = $pdo->query('SELECT admin_user_id, name, username, email, role, created_at, updated_at FROM admin_users ORDER BY created_at DESC');
+    $statement = $pdo->query(<<<'SQL'
+        SELECT
+            au.admin_user_id,
+            au.name,
+            au.username,
+            au.email,
+            au.role,
+            au.role_id,
+            au.assigned_event_id,
+            au.created_at,
+            au.updated_at,
+            r.role_name,
+            e.event_title
+        FROM admin_users au
+        LEFT JOIN roles r ON au.role_id = r.role_id
+        LEFT JOIN events e ON au.assigned_event_id = e.event_id
+        ORDER BY au.created_at DESC
+SQL);
     return $statement ? $statement->fetchAll() : [];
 }
 
@@ -152,9 +183,23 @@ function deleteAdminUser(PDO $pdo, int $adminUserId): bool
 function getAdminUserById(PDO $pdo, int $adminUserId): ?array
 {
     $statement = $pdo->prepare(<<<'SQL'
-        SELECT admin_user_id, name, username, email, role, created_at, updated_at
-        FROM admin_users
-        WHERE admin_user_id = :admin_user_id
+        SELECT
+            au.admin_user_id,
+            au.name,
+            au.username,
+            au.email,
+            au.password_hash,
+            au.role,
+            au.role_id,
+            au.assigned_event_id,
+            au.created_at,
+            au.updated_at,
+            r.role_name,
+            e.event_title
+        FROM admin_users au
+        LEFT JOIN roles r ON au.role_id = r.role_id
+        LEFT JOIN events e ON au.assigned_event_id = e.event_id
+        WHERE au.admin_user_id = :admin_user_id
         LIMIT 1
 SQL
     );

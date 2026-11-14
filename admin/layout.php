@@ -38,6 +38,7 @@ function renderAdminLayout(string $pageTitle, string $content, array $pageData =
     if ($isAuthenticated) {
         $topMenus = [
             'Administration' => [
+                ['users', 'admin/users.php', 'Users'],
                 ['admin_users', 'admin/admin_users.php', 'Admin Users'],
                 ['settings', 'admin/settings.php', 'Settings'],
                 ['registration_options', 'admin/registration_options.php', 'Registration Dropdown Options'],
@@ -51,6 +52,7 @@ function renderAdminLayout(string $pageTitle, string $content, array $pageData =
                 ['event_pass', 'admin/event_pass.php', 'Event Pass'],
                 ['admin_registration', 'admin/registration.php', 'Registration'],
                 ['registration_bulk_upload', 'admin/registration_bulk_upload.php', 'Bulk Upload'],
+                ['fetch_registration', 'admin/fetch_registration.php', 'Fetch Registration'],
             ],
             'On' => [
                 ['event_checkin', 'admin/event_checkin.php', 'Event Check-in'],

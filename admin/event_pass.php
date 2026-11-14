@@ -444,10 +444,12 @@ function getPublicPortalBaseUrl(PDO $pdo): string
 
 function buildExternallyHostedEventPassQrUrl(int $eventId, int $registrationId): string
 {
+    // The trailing ignored parameter gives the URL a .png ending, which some gateways require.
     return 'https://api.qrserver.com/v1/create-qr-code/?' . http_build_query([
         'size' => '200x200',
         'format' => 'png',
         'data' => buildQrPayload($eventId, $registrationId),
+        'file' => 'event-pass-' . $eventId . '-' . $registrationId . '.png',
     ], '', '&', PHP_QUERY_RFC3986);
 }
 
@@ -455,8 +457,6 @@ function buildPublicEventPassQrUrl(PDO $pdo, string $relativeQrPath, int $eventI
 {
     $portalBaseUrl = getPublicPortalBaseUrl($pdo);
     if ($portalBaseUrl === '') {
-        // QR Server is already used above to generate the local pass image. Its public image URL
-        // lets the WhatsApp gateway fetch the same QR code when this app is running on localhost.
         return buildExternallyHostedEventPassQrUrl($eventId, $registrationId);
     }
 
@@ -808,7 +808,11 @@ function getHttpRequest(string $url, ?string &$responseBody = null, ?int &$statu
         curl_close($ch);
 
         $responseBody = $result === false ? '' : (string) $result;
-        return $errorMessage === '' && $statusCode >= 200 && $statusCode < 300;
+        if ($errorMessage === '') {
+            return $statusCode >= 200 && $statusCode < 300;
+        }
+        // cURL transport failed (e.g. no CA bundle); retry with the stream wrapper below.
+        $errorMessage = null;
     }
 
     $context = stream_context_create([
@@ -952,6 +956,8 @@ function sendWhatsappEventPassMessage(
 
     if (!$sent) {
         error_log('WhatsApp Event Pass send failure: status=' . ($statusCode ?? 'unknown') . ' error=' . ($errorMessage ?? 'none') . ' response=' . compactWhatsappGatewayResponse($responseBody));
+    } else {
+        $errorMessage = 'Gateway accepted: ' . compactWhatsappGatewayResponse($responseBody) . ' | media: ' . $qrPublicUrl;
     }
 
     return $sent;
@@ -1239,7 +1245,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     'channel' => 'whatsapp',
                     'recipient' => $to,
                     'status' => 'sent',
-                    'details' => null,
+                    'details' => $deliveryError !== '' ? $deliveryError : null,
                     'message' => $body,
                     'qr_path' => $qrPath,
                     'pass_code' => $passCode,

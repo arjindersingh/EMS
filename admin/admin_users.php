@@ -2,6 +2,7 @@
 
 require_once __DIR__ . '/../config/database.php';
 require_once __DIR__ . '/auth_funcs.php';
+require_once __DIR__ . '/rbac_funcs.php';
 require_once __DIR__ . '/layout.php';
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -16,6 +17,7 @@ unset($_SESSION['admin_error'], $_SESSION['admin_success']);
 try {
     $pdo = createDbConnection();
     ensureAdminUsersTable($pdo);
+    ensureMissingMenuItemsExist($pdo);
     createDefaultAdminUserIfNoneExists($pdo);
 } catch (PDOException $exception) {
     $adminError = $adminError !== '' ? $adminError : 'Database connection failed: ' . $exception->getMessage();

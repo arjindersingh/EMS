@@ -87,10 +87,18 @@ function buildUrl(string $path = ''): string
         return $normalizedPath;
     }
 
-    $segments = array_map(static fn (string $segment): string => rawurlencode($segment), array_filter(explode('/', trim($normalizedPath, '/')), static fn (string $segment): bool => $segment !== ''));
+    // Separate path from query string
+    $pathOnly = $normalizedPath;
+    $queryString = '';
+    if (strpos($normalizedPath, '?') !== false) {
+        [$pathOnly, $queryString] = explode('?', $normalizedPath, 2);
+        $queryString = '?' . $queryString;
+    }
+
+    $segments = array_map(static fn (string $segment): string => rawurlencode($segment), array_filter(explode('/', trim($pathOnly, '/')), static fn (string $segment): bool => $segment !== ''));
     $encodedPath = '/' . implode('/', $segments);
 
-    return $basePath . $encodedPath;
+    return $basePath . $encodedPath . $queryString;
 }
 
 function getDbConfig(): array

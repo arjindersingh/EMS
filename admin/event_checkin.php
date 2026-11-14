@@ -477,7 +477,12 @@ ob_start();
     </div>
 </div>
 <audio id="checkinBackgroundAudio" preload="auto" aria-hidden="true"></audio>
-<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"></script>
+<script src="<?php echo htmlspecialchars(buildUrl('assets/js/jsQR.min.js'), ENT_QUOTES, 'UTF-8'); ?>"></script>
+<script>
+    if (typeof jsQR !== 'function') {
+        document.write('<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.min.js"><\/script>');
+    }
+</script>
 <script>
     const playbackConfig = <?php echo json_encode($playbackConfig, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT | JSON_UNESCAPED_SLASHES); ?>;
     const video = document.getElementById('video');
