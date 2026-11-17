@@ -45,14 +45,20 @@ function renderAdminLayout(string $pageTitle, string $content, array $pageData =
                 ['playback', 'admin/playback.php', 'dPlayback'],
             ],
             'Pre' => [
-                ['create_event', 'admin/create_event.php', 'Create Event'],
-                ['event_schedule', 'admin/event_schedule.php', 'Registration Schedule'],
-                ['event_itinerary', 'admin/event_itinerary.php', 'Itinerary'],
-                ['registration_approvals', 'admin/registration_approvals.php', 'Approval'],
-                ['event_pass', 'admin/event_pass.php', 'Event Pass'],
-                ['admin_registration', 'admin/registration.php', 'Registration'],
-                ['registration_bulk_upload', 'admin/registration_bulk_upload.php', 'Bulk Upload'],
-                ['fetch_registration', 'admin/fetch_registration.php', 'Fetch Registration'],
+                'Event' => [
+                    ['create_event', 'admin/create_event.php', 'Create Event'],
+                    ['event_schedule', 'admin/event_schedule.php', 'Registration Schedule'],
+                    ['event_itinerary', 'admin/event_itinerary.php', 'Itinerary'],
+                ],
+                'Applicants' => [
+                    ['admin_registration', 'admin/registration.php', 'Registration'],
+                    ['registration_bulk_upload', 'admin/registration_bulk_upload.php', 'Bulk Upload'],
+                    ['fetch_registration', 'admin/fetch_registration.php', 'Fetch Registrations'],
+                ],
+                'Invitation' => [
+                    ['registration_approvals', 'admin/registration_approvals.php', 'Approval'],
+                    ['event_pass', 'admin/event_pass.php', 'Pass'],
+                ],
             ],
             'On' => [
                 ['event_checkin', 'admin/event_checkin.php', 'Event Check-in'],
@@ -69,7 +75,20 @@ function renderAdminLayout(string $pageTitle, string $content, array $pageData =
 
         $activeTopMenu = 'Administration';
         foreach ($topMenus as $menuLabel => $menuItems) {
-            $menuPaths = array_column($menuItems, 0);
+            $menuPaths = [];
+            $flattenPaths = function ($items) use (&$flattenPaths, &$menuPaths) {
+                foreach ($items as $key => $value) {
+                    if (is_array($value) && isset($value[0]) && is_string($value[0])) {
+                        // This is a menu item [path, url, label]
+                        $menuPaths[] = $value[0];
+                    } elseif (is_array($value) && !isset($value[0])) {
+                        // This is a nested category, recurse into it
+                        $flattenPaths($value);
+                    }
+                }
+            };
+            $flattenPaths($menuItems);
+            
             $menuIsActive = in_array($currentPath, $menuPaths, true);
             if ($menuIsActive) {
                 $activeTopMenu = $menuLabel;
@@ -77,13 +96,72 @@ function renderAdminLayout(string $pageTitle, string $content, array $pageData =
             echo '<details class="top-menu" data-menu="' . htmlspecialchars(strtolower($menuLabel), ENT_QUOTES, 'UTF-8') . '">';
             echo '<summary' . ($menuIsActive ? ' class="active"' : '') . '>' . htmlspecialchars($menuLabel, ENT_QUOTES, 'UTF-8') . '</summary>';
             echo '<div class="top-submenu">';
-            foreach ($menuItems as [$itemPath, $itemUrl, $itemLabel]) {
-                if ($itemUrl === '') {
-                    echo '<span class="disabled-link" aria-disabled="true" title="Coming soon">' . htmlspecialchars($itemLabel, ENT_QUOTES, 'UTF-8') . '</span>';
-                    continue;
+            
+            // Check if this menu has nested structure
+            $hasNestedStructure = false;
+            foreach ($menuItems as $key => $item) {
+                // If the key is a string (not numeric), it's a category label
+                if (!is_int($key)) {
+                    $hasNestedStructure = true;
+                    break;
                 }
-                echo '<a href="' . htmlspecialchars(buildUrl($itemUrl), ENT_QUOTES, 'UTF-8') . '"' . ($currentPath === $itemPath ? ' class="active"' : '') . '>' . htmlspecialchars($itemLabel, ENT_QUOTES, 'UTF-8') . '</a>';
             }
+            
+            if ($hasNestedStructure) {
+                // Render nested structure with categories
+                foreach ($menuItems as $categoryLabel => $categoryItems) {
+                    if (!is_array($categoryItems)) {
+                        continue;
+                    }
+                    // Check if this category item is a proper nested item (has [path, url, label] structure)
+                    $isValidCategory = true;
+                    foreach ($categoryItems as $item) {
+                        if (!is_array($item) || !isset($item[0], $item[1], $item[2])) {
+                            $isValidCategory = false;
+                            break;
+                        }
+                    }
+                    if (!$isValidCategory) {
+                        continue;
+                    }
+                    
+                    echo '<div class="submenu-category">';
+                    echo '<span class="category-label">' . htmlspecialchars($categoryLabel, ENT_QUOTES, 'UTF-8') . '</span>';
+                    foreach ($categoryItems as $item) {
+                        // Defensive check - ensure this is actually a 3-element array
+                        if (!is_array($item) || !isset($item[0], $item[1], $item[2])) {
+                            continue;
+                        }
+                        $itemPath = $item[0];
+                        $itemUrl = $item[1];
+                        $itemLabel = $item[2];
+                        
+                        if ($itemUrl === '') {
+                            echo '<span class="disabled-link" aria-disabled="true" title="Coming soon">' . htmlspecialchars($itemLabel, ENT_QUOTES, 'UTF-8') . '</span>';
+                            continue;
+                        }
+                        echo '<a href="' . htmlspecialchars(buildUrl($itemUrl), ENT_QUOTES, 'UTF-8') . '"' . ($currentPath === $itemPath ? ' class="active"' : '') . '>' . htmlspecialchars($itemLabel, ENT_QUOTES, 'UTF-8') . '</a>';
+                    }
+                    echo '</div>';
+                }
+            } else {
+                // Render flat structure
+                foreach ($menuItems as $item) {
+                    if (!is_array($item) || !isset($item[0], $item[1], $item[2])) {
+                        continue;
+                    }
+                    $itemPath = $item[0];
+                    $itemUrl = $item[1];
+                    $itemLabel = $item[2];
+                    
+                    if ($itemUrl === '') {
+                        echo '<span class="disabled-link" aria-disabled="true" title="Coming soon">' . htmlspecialchars($itemLabel, ENT_QUOTES, 'UTF-8') . '</span>';
+                        continue;
+                    }
+                    echo '<a href="' . htmlspecialchars(buildUrl($itemUrl), ENT_QUOTES, 'UTF-8') . '"' . ($currentPath === $itemPath ? ' class="active"' : '') . '>' . htmlspecialchars($itemLabel, ENT_QUOTES, 'UTF-8') . '</a>';
+                }
+            }
+            
             echo '</div></details>';
         }
 
@@ -105,12 +183,70 @@ function renderAdminLayout(string $pageTitle, string $content, array $pageData =
             $isVisible = ($activeTopMenu ?? 'Administration') === $menuLabel;
             echo '<section class="sidebar-menu-section" data-menu="' . htmlspecialchars($menuKey, ENT_QUOTES, 'UTF-8') . '"' . ($isVisible ? '' : ' hidden') . '>';
             echo '<h2>' . htmlspecialchars($menuLabel, ENT_QUOTES, 'UTF-8') . '</h2>';
-            foreach ($menuItems as [$itemPath, $itemUrl, $itemLabel]) {
-                if ($itemUrl === '') {
-                    echo '<span class="sidebar-disabled" aria-disabled="true" title="Coming soon">' . htmlspecialchars($itemLabel, ENT_QUOTES, 'UTF-8') . '</span>';
-                    continue;
+            
+            // Check if this menu has nested structure
+            $hasNestedStructure = false;
+            foreach ($menuItems as $key => $item) {
+                // If the key is a string (not numeric), it's a category label
+                if (!is_int($key)) {
+                    $hasNestedStructure = true;
+                    break;
                 }
-                echo '<a href="' . htmlspecialchars(buildUrl($itemUrl), ENT_QUOTES, 'UTF-8') . '"' . ($currentPath === $itemPath ? ' class="active"' : '') . '>' . htmlspecialchars($itemLabel, ENT_QUOTES, 'UTF-8') . '</a>';
+            }
+            
+            if ($hasNestedStructure) {
+                // Render nested structure with categories
+                foreach ($menuItems as $categoryLabel => $categoryItems) {
+                    if (!is_array($categoryItems)) {
+                        continue;
+                    }
+                    // Check if this category item is a proper nested item
+                    $isValidCategory = true;
+                    foreach ($categoryItems as $item) {
+                        if (!is_array($item) || !isset($item[0], $item[1], $item[2])) {
+                            $isValidCategory = false;
+                            break;
+                        }
+                    }
+                    if (!$isValidCategory) {
+                        continue;
+                    }
+                    
+                    echo '<div class="sidebar-category">';
+                    echo '<h3 class="category-title">' . htmlspecialchars($categoryLabel, ENT_QUOTES, 'UTF-8') . '</h3>';
+                    foreach ($categoryItems as $item) {
+                        // Defensive check - ensure this is actually a 3-element array
+                        if (!is_array($item) || !isset($item[0], $item[1], $item[2])) {
+                            continue;
+                        }
+                        $itemPath = $item[0];
+                        $itemUrl = $item[1];
+                        $itemLabel = $item[2];
+                        
+                        if ($itemUrl === '') {
+                            echo '<span class="sidebar-disabled" aria-disabled="true" title="Coming soon">' . htmlspecialchars($itemLabel, ENT_QUOTES, 'UTF-8') . '</span>';
+                            continue;
+                        }
+                        echo '<a href="' . htmlspecialchars(buildUrl($itemUrl), ENT_QUOTES, 'UTF-8') . '"' . ($currentPath === $itemPath ? ' class="active"' : '') . '>' . htmlspecialchars($itemLabel, ENT_QUOTES, 'UTF-8') . '</a>';
+                    }
+                    echo '</div>';
+                }
+            } else {
+                // Render flat structure
+                foreach ($menuItems as $item) {
+                    if (!is_array($item) || !isset($item[0], $item[1], $item[2])) {
+                        continue;
+                    }
+                    $itemPath = $item[0];
+                    $itemUrl = $item[1];
+                    $itemLabel = $item[2];
+                    
+                    if ($itemUrl === '') {
+                        echo '<span class="sidebar-disabled" aria-disabled="true" title="Coming soon">' . htmlspecialchars($itemLabel, ENT_QUOTES, 'UTF-8') . '</span>';
+                        continue;
+                    }
+                    echo '<a href="' . htmlspecialchars(buildUrl($itemUrl), ENT_QUOTES, 'UTF-8') . '"' . ($currentPath === $itemPath ? ' class="active"' : '') . '>' . htmlspecialchars($itemLabel, ENT_QUOTES, 'UTF-8') . '</a>';
+                }
             }
             echo '</section>';
         }
