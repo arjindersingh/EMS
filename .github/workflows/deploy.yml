@@ -27,7 +27,7 @@ jobs:
           port: 21
 
           local-dir: ./
-          server-dir: /htdocs/
+          server-dir: /carnival.ct.ws/htdocs/
 
           exclude: |
             **/.git*
