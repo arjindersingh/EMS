@@ -181,17 +181,40 @@ Steps:
 
 ### Automatic Fetch
 
-```
-When to use: Regular scheduled imports throughout the day
-Steps:
-1. Enable "Automatic Fetch" toggle
-2. Set interval (minimum 5 minutes)
-3. System will check and import every N minutes
-4. Requires server-side scheduler (cron job)
+1. Configure the sheet URL and field mapping, enable **Automatic Fetch**, and
+   set the interval (minimum 5 minutes). Save the fetch methods.
+2. Schedule `scripts/automatic_registration_fetch.php` to run every minute.
+   The worker checks all enabled events and observes each event's interval;
+   the first run after enabling an event is eligible immediately. Failed
+   attempts are retried at the configured interval.
+3. Check the last attempt and any error on the Fetch Registration page. A
+   successful run records its time and skips registrations already imported.
+   To prevent repeated duplicates, automatic imports skip and report rows
+   without a non-empty mapped email or mobile number (or its configured
+   default). Manual and webhook imports retain their existing behavior.
 
-Cron Job Example (every 30 minutes):
-*/30 * * * * curl http://localhost:8000/admin/fetch_registration.php?event_id=1&action=auto
+On this WAMP installation, create a Windows Task Scheduler task:
+
+- Trigger: daily, repeat every 1 minute for an indefinite duration.
+- Action: start program `C:\wamp64\bin\php\php8.4.15\php.exe`
+- Add arguments: `C:\wamp64\www\ems\scripts\automatic_registration_fetch.php`
+- Start in: `C:\wamp64\www\ems`
+
+Use the PHP executable and application path for your installation, and an
+account with access to the database configuration and network. WAMP/MySQL and
+the machine must be running. Test the task with **Run** and check its result
+and the page's last-attempt status. The worker is CLI-only; it is not an HTTP
+endpoint.
+
+On Linux, an equivalent crontab entry is:
+
+```cron
+* * * * /usr/bin/php /path/to/ems/scripts/automatic_registration_fetch.php >> /path/to/ems-fetch.log 2>&1
 ```
+
+Protect the log file and use the PHP executable and application path for the
+server. Overlapping imports for the same event are prevented; a manual or
+webhook request must be retried if another import is running.
 
 ### Real-time Fetch (Webhook)
 

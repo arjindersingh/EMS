@@ -31,6 +31,7 @@ $checkinMode = '';
 $checkedInRegistrationId = 0;
 $lookupCandidate = null;
 $checkedInAttendance = null;
+$detailsCandidate = null;
 $announcementConfig = [
     'enabled' => true,
     'style' => 'warm',
@@ -124,91 +125,59 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } else {
             $adminError = 'No approved candidate matched this check-in code for the selected event.';
         }
-    } elseif ($action === 'mark_manual' && $selectedEventId > 0 && $pdo !== null) {
-        $registrationId = (int) ($_POST['registration_id'] ?? 0);
-        if ($registrationId > 0) {
-            $registration = getRegistrationById($pdo, $registrationId);
-            $event = getEventById($pdo, $selectedEventId);
-            if ($registration
-                && $event
-                && (int) $registration['event_id'] === $selectedEventId
-                && (string) ($registration['approval_status'] ?? '') === 'approved') {
-                $announcement = buildWelcomeAnnouncement($pdo, $registration, $event);
-                $adminUserId = isset($_SESSION['admin_user_id']) ? (int) $_SESSION['admin_user_id'] : null;
-                $adminUserName = (string) ($_SESSION['admin_name'] ?? $_SESSION['admin_username'] ?? 'admin');
-                $result = recordAttendance($pdo, $selectedEventId, $registrationId, 'manual', $adminUserId, $adminUserName, $announcement);
-                $checkedInName = trim((string) ($registration['name'] ?? ''));
-                $checkinMode = 'manual';
-                $checkedInRegistrationId = $registrationId;
-                $checkedInAttendance = $result['attendance'] ?? null;
-                if ($result['success']) {
-                    $adminSuccess = 'Checked in ' . $checkedInName . ' manually.';
-                } else {
-                    $adminError = $result['message'] ?? 'Unable to mark attendance.';
-                }
-            } else {
-                $adminError = 'Only an approved registration for the selected event can be checked in.';
-            }
-        } else {
-            $adminError = 'Please choose a candidate first.';
-        }
-    } elseif ($action === 'mark_checkin_code' && $selectedEventId > 0 && $pdo !== null) {
-        $registrationId = (int) ($_POST['registration_id'] ?? 0);
-        $registration = $registrationId > 0 ? getRegistrationById($pdo, $registrationId) : null;
-        $event = getEventById($pdo, $selectedEventId);
-        if ($registration
-            && $event
-            && (int) $registration['event_id'] === $selectedEventId
-            && (string) ($registration['approval_status'] ?? '') === 'approved') {
-            $announcement = buildWelcomeAnnouncement($pdo, $registration, $event);
-            $adminUserId = isset($_SESSION['admin_user_id']) ? (int) $_SESSION['admin_user_id'] : null;
-            $adminUserName = (string) ($_SESSION['admin_name'] ?? $_SESSION['admin_username'] ?? 'admin');
-            $result = recordAttendance($pdo, $selectedEventId, $registrationId, 'Check in Code', $adminUserId, $adminUserName, $announcement);
-            $checkedInName = trim((string) ($registration['name'] ?? ''));
-            $checkinMode = 'Check in Code';
-            $checkedInRegistrationId = $registrationId;
-            $checkedInAttendance = $result['attendance'] ?? null;
-            if ($result['success']) {
-                $adminSuccess = 'Checked in ' . $checkedInName . ' using the check-in code.';
-            } else {
-                $adminError = $result['message'] ?? 'Unable to mark attendance.';
-            }
-        } else {
-            $adminError = 'Only an approved registration for the selected event can be checked in.';
-        }
-    } elseif ($action === 'mark_qr' && $selectedEventId > 0 && $pdo !== null) {
-        $payload = trim((string) ($_POST['qr_payload'] ?? ''));
-        $scanData = parseQrPayload($payload);
-        $registrationId = (int) ($scanData['registration_id'] ?? 0);
+    } elseif (in_array($action, ['mark_manual', 'mark_checkin_code', 'mark_qr'], true) && $selectedEventId > 0 && $pdo !== null) {
+        $scanData = $action === 'mark_qr' ? parseQrPayload(trim((string) ($_POST['qr_payload'] ?? ''))) : [];
+        $registrationId = $action === 'mark_qr'
+            ? (int) ($scanData['registration_id'] ?? 0)
+            : (int) ($_POST['registration_id'] ?? 0);
         $eventIdFromScan = (int) ($scanData['event_id'] ?? 0);
         $eventIdToUse = $eventIdFromScan > 0 ? $eventIdFromScan : $selectedEventId;
+        $registration = $registrationId > 0 ? getRegistrationById($pdo, $registrationId) : null;
+        $event = getEventById($pdo, $eventIdToUse);
 
-        if ($registrationId > 0 && $eventIdToUse > 0) {
-            $registration = getRegistrationById($pdo, $registrationId);
-            $event = getEventById($pdo, $eventIdToUse);
-            if ($registration
-                && $event
-                && (int) $registration['event_id'] === $eventIdToUse
-                && (string) ($registration['approval_status'] ?? '') === 'approved') {
+        if (!$registration || !$event || (int) $registration['event_id'] !== $eventIdToUse
+            || (string) ($registration['approval_status'] ?? '') !== 'approved') {
+            $adminError = $action === 'mark_qr'
+                ? 'The QR code does not belong to an approved registration for this event.'
+                : 'Only an approved registration for the selected event can be checked in.';
+        } elseif (!isAjaxRequest()) {
+            $adminError = 'JavaScript is required to complete the check-in details.';
+        } elseif (($_POST['details_confirmed'] ?? '') !== '1') {
+            if (getAttendanceRecord($pdo, $eventIdToUse, $registrationId)) {
+                $adminError = 'This candidate is already checked in.';
+            } else {
+                $detailsCandidate = [
+                    'registration_id' => $registrationId,
+                    'event_id' => $eventIdToUse,
+                    'event_title' => $event['event_title'],
+                    'name' => $registration['name'],
+                    'designation' => $registration['designation'],
+                    'institution_name' => $registration['institution_name'],
+                    'mobile' => $registration['mobile'],
+                    'official_email' => $registration['official_email'],
+                ];
+                $adminSuccess = 'Enter the check-in details to complete attendance.';
+            }
+        } else {
+            $accompanistCount = parseCheckinAccompanistCount($_POST['accompanist_count'] ?? null);
+            if ($accompanistCount === null) {
+                $adminError = 'Enter a valid non-negative whole number of accompanists.';
+            } else {
+                $checkinMode = $action === 'mark_qr' ? 'qr' : ($action === 'mark_checkin_code' ? 'Check in Code' : 'manual');
                 $announcement = buildWelcomeAnnouncement($pdo, $registration, $event);
                 $adminUserId = isset($_SESSION['admin_user_id']) ? (int) $_SESSION['admin_user_id'] : null;
                 $adminUserName = (string) ($_SESSION['admin_name'] ?? $_SESSION['admin_username'] ?? 'admin');
-                $result = recordAttendance($pdo, $eventIdToUse, $registrationId, 'qr', $adminUserId, $adminUserName, $announcement);
+                $result = recordAttendance($pdo, $eventIdToUse, $registrationId, $checkinMode, $adminUserId, $adminUserName, $announcement, $accompanistCount);
                 $checkedInName = trim((string) ($registration['name'] ?? ''));
-                $checkinMode = 'qr';
                 $checkedInRegistrationId = $registrationId;
                 $checkedInAttendance = $result['attendance'] ?? null;
                 if ($result['success']) {
-                    $adminSuccess = 'Checked in ' . $checkedInName . ' via QR.';
-                    $announcement = $result['announcement'];
+                    $adminSuccess = 'Checked in ' . $checkedInName . '.';
                 } else {
+                    $announcement = '';
                     $adminError = $result['message'] ?? 'Unable to mark attendance.';
                 }
-            } else {
-                $adminError = 'The QR code does not belong to an approved registration for this event.';
             }
-        } else {
-            $adminError = 'QR payload was empty or invalid.';
         }
     }
 
@@ -226,6 +195,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             'mode' => $checkinMode,
             'registration_id' => $checkedInRegistrationId,
             'candidate' => $lookupCandidate,
+            'details_candidate' => $detailsCandidate,
             'attendance' => $checkedInAttendance,
         ]);
         exit;
@@ -238,7 +208,30 @@ if ($selectedEventId > 0 && $pdo !== null) {
 }
 ob_start();
 ?>
-<div class="card">
+<section id="checkinDetailsScreen" class="card checkin-details-screen" aria-labelledby="checkinDetailsHeading" hidden>
+    <h2 id="checkinDetailsHeading" tabindex="-1">Confirm check-in details</h2>
+    <p>Attendance is recorded when you save these details.</p>
+    <div class="checkin-details-grid">
+        <div><span>Name</span><strong data-details-field="name"></strong></div>
+        <div><span>Event</span><strong data-details-field="event_title"></strong></div>
+        <div><span>Designation</span><strong data-details-field="designation"></strong></div>
+        <div><span>Institution</span><strong data-details-field="institution_name"></strong></div>
+        <div><span>Mobile</span><strong data-details-field="mobile"></strong></div>
+        <div><span>Email</span><strong data-details-field="official_email"></strong></div>
+        <div><span>Registration ID</span><strong data-details-field="registration_id"></strong></div>
+    </div>
+    <form id="checkinDetailsForm">
+        <label for="accompanistCount">Number of accompanists</label>
+        <p class="muted">Count people accompanying the main invitee, not the invitee.</p>
+        <input id="accompanistCount" name="accompanist_count" type="number" min="0" max="2147483647" step="1" value="0" required>
+        <p id="checkinDetailsError" class="alert error" role="alert" hidden></p>
+        <div class="actions">
+            <button type="submit">Save and complete check-in</button>
+            <button type="button" id="cancelCheckinDetails" class="button-secondary">Cancel</button>
+        </div>
+    </form>
+</section>
+<div class="card" id="checkinMain">
         <?php if ($adminError !== ''): ?><div class="alert error"><?php echo htmlspecialchars($adminError, ENT_QUOTES, 'UTF-8'); ?></div><?php endif; ?>
     <?php if ($adminSuccess !== ''): ?><div class="alert success"><?php echo htmlspecialchars($adminSuccess, ENT_QUOTES, 'UTF-8'); ?></div><?php endif; ?>
 
@@ -503,6 +496,12 @@ ob_start();
     const checkinCodeConfirmForm = document.getElementById('checkinCodeConfirmForm');
     const checkinCodeResult = document.getElementById('checkinCodeResult');
     const checkinCodeRegistrationId = document.getElementById('checkinCodeRegistrationId');
+    const checkinMain = document.getElementById('checkinMain');
+    const detailsScreen = document.getElementById('checkinDetailsScreen');
+    const detailsForm = document.getElementById('checkinDetailsForm');
+    const detailsHeading = document.getElementById('checkinDetailsHeading');
+    const detailsError = document.getElementById('checkinDetailsError');
+    const cancelDetailsBtn = document.getElementById('cancelCheckinDetails');
     const announcementEnabled = document.querySelector('[name="announcement_enabled"]');
     const announcementLanguage = document.getElementById('announcementLanguage');
     const announcementGender = document.getElementById('announcementGender');
@@ -517,12 +516,17 @@ ob_start();
     const stopPlaybackBtn = document.getElementById('stopPlaybackBtn');
     let stream = null;
     let scanning = false;
+    let scanFrame = null;
     let lastScanAt = 0;
     let statusTypingTimer = null;
     let playbackIndex = 0;
     let playbackFadeTimer = null;
     let announcementSequence = 0;
     let playbackPausedForAnnouncement = false;
+    let pendingCheckin = null;
+    let preparingCheckin = false;
+    let resumeCamera = false;
+    let qrRequestInFlight = false;
 
     function playbackTracks() {
         const tracks = Array.isArray(playbackConfig.tracks) ? [...playbackConfig.tracks] : [];
@@ -774,6 +778,7 @@ ob_start();
             scanning = true;
             setStatus('Camera is ready. Point it at a QR code.');
             if (typeof jsQR !== 'function') {
+                scanning = false;
                 setStatus('QR decode library is not loaded.');
                 return;
             }
@@ -786,6 +791,10 @@ ob_start();
 
     function stopCamera() {
         scanning = false;
+        if (scanFrame !== null) {
+            cancelAnimationFrame(scanFrame);
+            scanFrame = null;
+        }
         if (stream) {
             stream.getTracks().forEach(track => track.stop());
             stream = null;
@@ -812,68 +821,122 @@ ob_start();
             ctx.drawImage(video, 0, 0, scanWidth, scanHeight);
             const imageData = ctx.getImageData(0, 0, scanWidth, scanHeight);
             const code = jsQR(imageData.data, imageData.width, imageData.height);
-            if (code && Date.now() - lastScanAt > 1500) {
+            if (code && !qrRequestInFlight && Date.now() - lastScanAt > 1500) {
                 lastScanAt = Date.now();
                 qrPayloadInput.value = code.data;
-                setStatus('QR scanned. Marking attendance...');
+                setStatus('QR scanned. Finding registration...');
                 submitQrForm();
-                setTimeout(() => {
-                    if (scanning) {
-                        scanLoop();
-                    }
-                }, 1200);
-                return;
             }
         }
 
-        requestAnimationFrame(scanLoop);
+        scanFrame = requestAnimationFrame(scanLoop);
     }
 
-    function submitQrForm() {
-        const formData = new FormData(qrForm);
-        (async () => {
-            try {
-                setStatus('Submitting check-in...');
-                const response = await fetch(window.location.href, {
-                    method: 'POST',
-                    headers: {
-                        'X-Requested-With': 'XMLHttpRequest'
-                    },
-                    body: new URLSearchParams(formData)
-                });
+    async function sendCheckinRequest(params) {
+        const response = await fetch(window.location.href, {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+            body: params
+        });
+        let data;
+        try {
+            data = await response.json();
+        } catch (error) {
+            throw new Error('The server returned an invalid response. Check recent check-ins before retrying.');
+        }
+        if (!response.ok || !data.success) {
+            throw new Error(data.message || 'Unable to complete check-in.');
+        }
+        return data;
+    }
 
-                const text = await response.text();
-                let data = null;
-                try {
-                    data = JSON.parse(text);
-                } catch (err) {
-                    // non-JSON response
-                }
-
-                if (!response.ok) {
-                    const msg = data && data.message ? data.message : text || ('Status ' + response.status);
-                    setStatus('Server error: ' + msg, 'error');
-                    return;
-                }
-
-                if (!data) {
-                    setStatus('Unexpected server response: ' + (text ? text.substring(0, 300) : 'empty'), 'error');
-                    return;
-                }
-
-                if (data.success) {
-                    setStatus(data.message + ' ' + (data.announcement || ''), 'success');
-                    markRegistrationCheckedIn(data.registration_id, data.mode);
-                    addRecentCheckin(data);
-                    speakAnnouncement(data.announcement || 'Welcome!');
-                } else {
-                    setStatus(data.message || 'Unable to mark attendance.', 'error');
-                }
-            } catch (err) {
-                console.error('Check-in request failed:', err);
-                setStatus('The check-in request could not be completed. ' + (err && err.message ? err.message : ''), 'error');
+    async function prepareCheckin(form) {
+        if (preparingCheckin || pendingCheckin) {
+            throw new Error('A check-in is already in progress.');
+        }
+        preparingCheckin = true;
+        try {
+            const params = new URLSearchParams(new FormData(form));
+            const data = await sendCheckinRequest(params);
+            if (!data.details_candidate) {
+                throw new Error('The server did not return the registration details.');
             }
-        })();
+            pendingCheckin = params;
+            Object.entries(data.details_candidate).forEach(([field, value]) => {
+                const target = detailsScreen.querySelector('[data-details-field="' + field + '"]');
+                if (target) target.textContent = value || '—';
+            });
+            detailsForm.reset();
+            detailsError.hidden = true;
+            resumeCamera = scanning;
+            if (resumeCamera) stopCamera();
+            checkinMain.hidden = true;
+            detailsScreen.hidden = false;
+            detailsHeading.focus();
+            window.scrollTo(0, 0);
+        } finally {
+            preparingCheckin = false;
+        }
+    }
+
+    async function returnToCheckin(message, type) {
+        pendingCheckin = null;
+        detailsScreen.hidden = true;
+        checkinMain.hidden = false;
+        const restartCamera = resumeCamera;
+        resumeCamera = false;
+        if (restartCamera) {
+            await startCamera();
+            if (!scanning) return;
+        }
+        setStatus(message, type);
+    }
+
+    detailsForm.addEventListener('submit', async event => {
+        event.preventDefault();
+        if (!pendingCheckin) return;
+        const button = detailsForm.querySelector('button[type="submit"]');
+        button.disabled = true;
+        button.textContent = 'Saving...';
+        cancelDetailsBtn.disabled = true;
+        detailsError.hidden = true;
+        const params = new URLSearchParams(pendingCheckin);
+        params.set('details_confirmed', '1');
+        new FormData(detailsForm).forEach((value, key) => params.set(key, value));
+        try {
+            const data = await sendCheckinRequest(params);
+            if (Number(data.attendance?.event_id) === Number(<?php echo (int) $selectedEventId; ?>)) {
+                markRegistrationCheckedIn(data.registration_id, data.mode);
+                addRecentCheckin(data);
+            }
+            checkinCodeResult.hidden = true;
+            checkinCodeLookupForm.reset();
+            speakAnnouncement(data.announcement);
+            await returnToCheckin(data.message + ' ' + (data.announcement || ''), 'success');
+        } catch (error) {
+            detailsError.textContent = (error.message || 'Unable to complete check-in.')
+                + ' If the connection was interrupted, check recent check-ins before retrying.';
+            detailsError.hidden = false;
+        } finally {
+            button.disabled = false;
+            button.textContent = 'Save and complete check-in';
+            cancelDetailsBtn.disabled = false;
+        }
+    });
+
+    cancelDetailsBtn.addEventListener('click', () => {
+        returnToCheckin('Check-in cancelled.', 'info');
+    });
+
+    async function submitQrForm() {
+        qrRequestInFlight = true;
+        try {
+            await prepareCheckin(qrForm);
+        } catch (error) {
+            setStatus(error.message || 'Unable to find registration.', 'error');
+        } finally {
+            qrRequestInFlight = false;
+        }
     }
 
     checkinTabs.forEach(tab => {
@@ -913,36 +976,16 @@ ob_start();
         form.addEventListener('submit', async event => {
             event.preventDefault();
             const button = form.querySelector('button[type="submit"]');
-            const row = form.closest('tr');
             if (button) {
                 button.disabled = true;
-                button.textContent = 'Checking in...';
+                button.textContent = 'Loading...';
             }
 
             try {
-                const response = await fetch(window.location.href, {
-                    method: 'POST',
-                    headers: { 'X-Requested-With': 'XMLHttpRequest' },
-                    body: new URLSearchParams(new FormData(form))
-                });
-                const text = await response.text();
-                let data;
-                try {
-                    data = JSON.parse(text);
-                } catch (error) {
-                    throw new Error('The server returned an invalid response.');
-                }
-
-                if (!response.ok || !data.success) {
-                    throw new Error(data.message || 'Unable to mark attendance.');
-                }
-
-                setStatus(data.message + ' ' + (data.announcement || ''), 'success');
-                markRegistrationCheckedIn(data.registration_id, data.mode);
-                addRecentCheckin(data);
-                speakAnnouncement(data.announcement);
+                await prepareCheckin(form);
             } catch (error) {
-                setStatus(error.message || 'Unable to mark attendance.', 'error');
+                setStatus(error.message || 'Unable to find registration.', 'error');
+            } finally {
                 if (button) {
                     button.disabled = false;
                     button.textContent = 'Check in';
@@ -993,27 +1036,13 @@ ob_start();
         const button = checkinCodeConfirmForm.querySelector('button[type="submit"]');
         if (button) {
             button.disabled = true;
-            button.textContent = 'Checking in...';
+            button.textContent = 'Loading...';
         }
 
         try {
-            const response = await fetch(window.location.href, {
-                method: 'POST',
-                headers: { 'X-Requested-With': 'XMLHttpRequest' },
-                body: new URLSearchParams(new FormData(checkinCodeConfirmForm))
-            });
-            const data = await response.json();
-            if (!response.ok || !data.success) {
-                throw new Error(data.message || 'Unable to mark attendance.');
-            }
-            setStatus(data.message + ' ' + (data.announcement || ''), 'success');
-            markRegistrationCheckedIn(data.registration_id, data.mode);
-            addRecentCheckin(data);
-            checkinCodeResult.hidden = true;
-            checkinCodeLookupForm.reset();
-            speakAnnouncement(data.announcement);
+            await prepareCheckin(checkinCodeConfirmForm);
         } catch (error) {
-            setStatus(error.message || 'Unable to mark attendance.', 'error');
+            setStatus(error.message || 'Unable to find registration.', 'error');
         } finally {
             if (button) {
                 button.disabled = false;

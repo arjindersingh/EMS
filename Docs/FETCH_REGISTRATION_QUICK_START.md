@@ -191,12 +191,16 @@ http://localhost:8000/admin/google_sheets_webhook.php?event_id=YOUR_EVENT_ID
 
 ## ⚙️ Advanced Configuration
 
-### Automatic Fetch with Cron
+### Automatic Fetch with a Scheduler
 
-Add to server crontab (every 30 minutes):
-```bash
-*/30 * * * * curl 'http://localhost:8000/admin/fetch_registration.php?event_id=1&action=auto' > /dev/null 2>&1
+Run the CLI worker every minute; it enforces each event's configured interval.
+For example, on Linux:
+```cron
+* * * * /usr/bin/php /path/to/ems/scripts/automatic_registration_fetch.php >> /path/to/ems-fetch.log 2>&1
 ```
+
+For Windows Task Scheduler instructions, see the Automatic Fetch section in
+[FETCH_REGISTRATION_GUIDE.md](./FETCH_REGISTRATION_GUIDE.md).
 
 ### Multiple Events
 

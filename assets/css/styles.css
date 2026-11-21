@@ -3305,6 +3305,46 @@ body.event-checkin-page #video.video-frame {
     object-fit: cover;
 }
 
+.checkin-details-screen[hidden],
+#checkinMain[hidden] {
+    display: none;
+}
+
+.checkin-details-screen h2 {
+    font-size: clamp(1.8rem, 4vw, 2.5rem);
+}
+
+.checkin-details-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 1.25rem;
+    margin: 1.5rem 0;
+}
+
+.checkin-details-grid span,
+.checkin-details-grid strong {
+    display: block;
+    overflow-wrap: anywhere;
+}
+
+.checkin-details-grid span {
+    color: #687982;
+    font-weight: 750;
+}
+
+.checkin-details-grid strong {
+    font-size: 1.5rem;
+}
+
+.checkin-details-screen label,
+.checkin-details-screen input {
+    font-size: 1.25rem;
+}
+
+.checkin-details-screen input {
+    max-width: 220px;
+}
+
 .checkin-tabs {
     display: flex;
     gap: .5rem;

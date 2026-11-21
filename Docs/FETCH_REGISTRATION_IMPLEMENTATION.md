@@ -236,13 +236,16 @@ Settings stored as JSON in settings table with keys:
 ### Method 2: Automatic Fetch
 ```
 ✓ Enable toggle
-✓ Set interval (5-1440 minutes)
-✓ System checks every N minutes
-✓ Requires: Cron job on server
+✓ Set interval (minimum 5 minutes)
+✓ The worker checks each enabled event's interval
+✓ Requires: Server scheduler running the CLI worker every minute
 
 Cron example:
-*/30 * * * * curl 'http://localhost:8000/admin/fetch_registration.php?event_id=1&action=auto'
+* * * * /usr/bin/php /path/to/ems/scripts/automatic_registration_fetch.php >> /path/to/ems-fetch.log 2>&1
 ```
+
+For Windows setup and failure status, see the Automatic Fetch section in
+[FETCH_REGISTRATION_GUIDE.md](./FETCH_REGISTRATION_GUIDE.md).
 
 ### Method 3: Real-time Fetch
 ```

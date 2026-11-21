@@ -134,7 +134,8 @@ Bearer token authentication for API endpoints
 
 #### `event_attendance`
 Check-in records for attendee presence tracking
-- **Columns:** attendance_id (PK), event_id (FK), registration_id (FK), checked_in_at, checked_in_by
+- **Columns:** attendance_id (PK), event_id (FK), registration_id (FK), checked_in_at, checked_in_by, accompanist_count
+- `accompanist_count` excludes the invitee; NULL means the count was not captured.
 
 #### `settings`
 Application-wide configuration key-value pairs
@@ -168,6 +169,7 @@ In-event announcements/notifications during check-in
 
 ### 3. **Check-in Management**
 - Scan QR codes for quick check-in
+- In the admin check-in screen, QR, manual, and check-in code selection open a details screen. Attendance and the accompanist count are saved only after confirmation; cancelling does not check the invitee in. The configured announcement then plays.
 - Track attendance with timestamps
 - View real-time attendance data
 - Generate attendance reports

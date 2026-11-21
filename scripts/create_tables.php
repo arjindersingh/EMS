@@ -301,6 +301,7 @@ SQL
             checked_in_by VARCHAR(100) NULL,
             checked_in_by_user_id INT NULL,
             mode VARCHAR(20) NOT NULL DEFAULT 'qr',
+            accompanist_count INT UNSIGNED NULL,
             welcome_message TEXT NULL,
             whatsapp_sent TINYINT(1) NOT NULL DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

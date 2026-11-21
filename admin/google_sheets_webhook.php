@@ -47,8 +47,16 @@ try {
         exit;
     }
     
-    // Fetch and process registrations
-    $result = fetchAndProcessRegistrations($pdo, $eventId, $csvURL);
+    if (!acquireRegistrationFetchLock($pdo, $eventId)) {
+        http_response_code(409);
+        echo json_encode(['error' => 'An import is already running for this event. Please retry.']);
+        exit;
+    }
+    try {
+        $result = fetchAndProcessRegistrations($pdo, $eventId, $csvURL);
+    } finally {
+        releaseRegistrationFetchLock($pdo, $eventId);
+    }
     
     // Log webhook call
     error_log("[WEBHOOK] Event {$eventId}: Success={$result['success']}, Duplicates={$result['duplicates']}, Failed={$result['failed']}");

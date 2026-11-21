@@ -40,9 +40,9 @@ if ($action === 'load_sheet_tabs') {
 		$selectedSheetGid = getGoogleSheetGid($sheetURLInput);
 		$sheetTabs = getGoogleSheetTabs($sheetURLInput);
 		if ($sheetTabs) {
-			$adminSuccess = 'Worksheet tabs loaded. Choose a tab and save the sheet URL.';
+			$adminSuccess = 'Worksheet tabs loaded (or detected default). Choose a tab and save the sheet URL.';
 		} else {
-			$adminError = 'Could not load worksheet tabs. Check that the Google Sheet is publicly viewable and try again.';
+			$adminError = 'Could not load worksheet tabs. Check that the Google Sheet is publicly viewable. You can still save the URL and manually configure the sheet ID.';
 		}
 	}
 } elseif ($action === 'save_sheet_url') {
@@ -111,31 +111,50 @@ if ($action === 'load_sheet_tabs') {
 	$automatic = isset($_POST['fetch_automatic_enabled']) ? true : false;
 	$realtime = isset($_POST['fetch_realtime_enabled']) ? true : false;
 	
-	$automaticInterval = (int) ($_POST['fetch_automatic_interval'] ?? 60);
-	
-	saveFetchMethod($pdo, $eventId, 'manual', $manual);
-	saveFetchMethod($pdo, $eventId, 'automatic', $automatic, $automaticInterval);
-	saveFetchMethod($pdo, $eventId, 'realtime', $realtime);
-	
-	$adminSuccess = 'Fetch methods updated successfully!';
+	$automaticInterval = filter_var($_POST['fetch_automatic_interval'] ?? null, FILTER_VALIDATE_INT, [
+		'options' => ['min_range' => 5, 'max_range' => 2147483647],
+	]);
+
+	if ($eventId <= 0 || !getEventById($pdo, $eventId)) {
+		$adminError = 'Select a valid event.';
+	} elseif ($automaticInterval === false) {
+		$adminError = 'Automatic fetch interval must be at least 5 minutes.';
+	} else {
+		try {
+			if (!saveFetchMethod($pdo, $eventId, 'automatic', $automatic, $automaticInterval)
+				|| !saveFetchMethod($pdo, $eventId, 'manual', $manual)
+				|| !saveFetchMethod($pdo, $eventId, 'realtime', $realtime)) {
+				$adminError = 'Failed to save all fetch methods. Check the settings and try again.';
+			} else {
+				$adminSuccess = 'Fetch methods updated successfully!';
+			}
+		} catch (RuntimeException $exception) {
+			error_log('Failed to save fetch methods: ' . $exception->getMessage());
+			$adminError = $exception->getMessage();
+		}
+	}
 } elseif ($action === 'fetch_now') {
 	$sheetURL = getGoogleSheetURL($pdo, $eventId);
-	$csvURL = convertToCSVExportURL($sheetURL);
+	$csvURL = $sheetURL ? convertToCSVExportURL($sheetURL) : null;
 	
 	if (!$csvURL) {
 		$adminError = 'Invalid Google Sheet URL.';
 	} else {
-		$result = fetchAndProcessRegistrations($pdo, $eventId, $csvURL);
-		$fetchResult = $result;
-		
-		$adminSuccess = "Fetch complete! Total: {$result['total']}, Success: {$result['success']}, Duplicates: {$result['duplicates']}, Failed: {$result['failed']}";
-		
-		if (!empty($result['errors'])) {
-			$adminError = 'Errors: ' . implode('; ', $result['errors']);
+		if (!acquireRegistrationFetchLock($pdo, $eventId)) {
+			$adminError = 'An import is already running for this event. Please try again later.';
+		} else {
+			try {
+				$result = fetchAndProcessRegistrations($pdo, $eventId, $csvURL);
+				$fetchResult = $result;
+				$adminSuccess = "Fetch complete! Total: {$result['total']}, Success: {$result['success']}, Duplicates: {$result['duplicates']}, Failed: {$result['failed']}";
+				if (!empty($result['errors'])) {
+					$adminError = 'Errors: ' . implode('; ', $result['errors']);
+				}
+				saveFetchMethod($pdo, $eventId, 'manual', true);
+			} finally {
+				releaseRegistrationFetchLock($pdo, $eventId);
+			}
 		}
-		
-		// Update last fetch time
-		saveFetchMethod($pdo, $eventId, 'manual', true);
 	}
 }
 
@@ -582,7 +601,7 @@ ob_start();
 					   placeholder="https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit"
 					   value="<?php echo htmlspecialchars($sheetURLInput ?? '', ENT_QUOTES, 'UTF-8'); ?>" required>
 				<small style="color: #666; display: block; margin-top: 5px;">
-					Paste the Google Sheets link. Make sure the sheet is publicly accessible or shared.
+					Paste the Google Sheets link. Make sure the sheet is publicly accessible or shared. The sheet must be viewable by anyone with the link.
 				</small>
 			</div>
 
@@ -612,14 +631,18 @@ ob_start();
 						<?php endforeach; ?>
 					</select>
 					<small style="color: #666; display: block; margin-top: 5px;">
-						Choose a tab, then save to use it for the import.
+						<?php if (count($sheetTabs) === 1 && $sheetTabs[0]['gid'] === 0): ?>
+							Using the default worksheet. If your sheet has multiple tabs, manually enter the GID number. You can find the GID in the URL: <code>#gid=XXXX</code>
+						<?php else: ?>
+							Choose a tab, then save to use it for the import.
+						<?php endif; ?>
 					</small>
 				<?php else: ?>
 					<select id="sheet_gid" name="sheet_gid">
 						<option value="<?php echo $selectedSheetGid; ?>">Current worksheet (GID <?php echo $selectedSheetGid; ?>)</option>
 					</select>
 					<small style="color: #666; display: block; margin-top: 5px;">
-						Worksheet names are not loaded yet. Click “Load worksheet tabs” to fetch the available sheets from this URL.
+						Tabs could not be automatically detected. The system will use the default worksheet (gid=0). To use a different sheet tab, find its GID in the URL (<code>#gid=XXXX</code>) and manually set it after clicking "Load worksheet tabs".
 					</small>
 				<?php endif; ?>
 			</div>
@@ -698,10 +721,18 @@ ob_start();
 									<td>
 										<select name="mapping[<?php echo (int) $rowIndex; ?>]" class="field-select" onchange="updateFieldStatus(this)">
 											<option value="">-- Not Mapped --</option>
-											<?php foreach ($sheetHeaders as $header): ?>
+											<?php foreach ($sheetHeaders as $headerIndex => $header):
+												$columnNumber = $headerIndex + 1;
+												$columnAlphabet = '';
+												while ($columnNumber > 0) {
+													$columnNumber--;
+													$columnAlphabet = chr(65 + ($columnNumber % 26)) . $columnAlphabet;
+													$columnNumber = intdiv($columnNumber, 26);
+												}
+											?>
 												<option value="<?php echo htmlspecialchars($header, ENT_QUOTES, 'UTF-8'); ?>"
 														<?php echo $mappedColumn === $header ? 'selected' : ''; ?>>
-													<?php echo htmlspecialchars($header, ENT_QUOTES, 'UTF-8'); ?>
+													<?php echo htmlspecialchars($header, ENT_QUOTES, 'UTF-8') . ' (' . $columnAlphabet . ')'; ?>
 													<?php if ($isAutoMatched && $mappedColumn === $header): ?>
 														(auto-matched)
 													<?php endif; ?>
@@ -798,8 +829,30 @@ ob_start();
 							   min="5" value="<?php echo $currentFetchMethods['automatic']['interval_minutes'] ?? 60; ?>">
 					</div>
 					<p style="color: #666; font-size: 13px;">
-						Data will be fetched automatically at specified intervals.
+						A server scheduler must run <code>scripts/automatic_registration_fetch.php</code> every minute. See the fetch registration guide for setup.
+						Automatic imports skip rows without a mapped email or mobile number to prevent duplicates.
 					</p>
+					<?php if (!empty($currentFetchMethods['automatic']['last_attempt'])): ?>
+						<p style="font-size: 13px;">
+							Last automatic attempt: <?php echo htmlspecialchars((string) $currentFetchMethods['automatic']['last_attempt'], ENT_QUOTES, 'UTF-8'); ?>
+							<?php if (($currentFetchMethods['automatic']['last_status'] ?? '') === 'started'): ?>
+								<br>Attempt started; completion has not been recorded.
+							<?php endif; ?>
+							<?php if (!empty($currentFetchMethods['automatic']['last_error'])): ?>
+								<br><span style="color: #dc3545;">Error: <?php echo htmlspecialchars((string) $currentFetchMethods['automatic']['last_error'], ENT_QUOTES, 'UTF-8'); ?></span>
+							<?php endif; ?>
+							<?php if (!empty($currentFetchMethods['automatic']['last_result']) && is_array($currentFetchMethods['automatic']['last_result'])): ?>
+								<br>Last attempt: <?php echo (int) ($currentFetchMethods['automatic']['last_result']['success'] ?? 0); ?> imported,
+								<?php echo (int) ($currentFetchMethods['automatic']['last_result']['duplicates'] ?? 0); ?> duplicates,
+								<?php echo (int) ($currentFetchMethods['automatic']['last_result']['failed'] ?? 0); ?> failed.
+							<?php endif; ?>
+							<?php if (!empty($currentFetchMethods['automatic']['last_fetch'])): ?>
+								<br>Last successful automatic fetch: <?php echo htmlspecialchars((string) $currentFetchMethods['automatic']['last_fetch'], ENT_QUOTES, 'UTF-8'); ?>
+							<?php endif; ?>
+						</p>
+					<?php else: ?>
+						<p style="color: #666; font-size: 13px;">No automatic fetch attempt has been recorded yet.</p>
+					<?php endif; ?>
 				</div>
 			</div>
 

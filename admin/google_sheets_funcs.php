@@ -87,17 +87,41 @@ function getGoogleSheetTabs(string $sheetURL): array
     }
 
     $spreadsheetId = $matches[1];
-    $html = false;
-    $url = 'https://docs.google.com/spreadsheets/d/' . $spreadsheetId . '/edit?usp=sharing';
+    
+    // Try multiple methods to get sheet tabs
+    // Method 1: Try modern HTML parsing
+    $tabs = getGoogleSheetTabsFromEditPageModern($spreadsheetId);
+    if (!empty($tabs)) {
+        return $tabs;
+    }
+    
+    // Method 2: Fallback to discovery by probing CSV exports (tries GIDs 0-5)
+    $tabs = discoverGoogleSheetTabsByCSVProbing($spreadsheetId);
+    if (!empty($tabs)) {
+        return $tabs;
+    }
+    
+    // Method 3: Return at least the default sheet (gid=0)
+    // This allows the system to work even if tab discovery fails
+    return [['gid' => 0, 'title' => 'Default Worksheet (Sheet1)']];
+}
 
+function getGoogleSheetTabsFromEditPageModern(string $spreadsheetId): array
+{
+    $editUrl = 'https://docs.google.com/spreadsheets/d/' . $spreadsheetId . '/edit?usp=sharing';
+    $html = false;
+    
+    // Try curl first with SSL verification disabled for Windows environments
     if (function_exists('curl_init')) {
-        $curl = curl_init($url);
+        $curl = curl_init($editUrl);
         curl_setopt_array($curl, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_SSL_VERIFYPEER => false,
+            CURLOPT_SSL_VERIFYHOST => false,
             CURLOPT_CONNECTTIMEOUT => 5,
             CURLOPT_TIMEOUT => 15,
-            CURLOPT_USERAGENT => 'Mozilla/5.0 (compatible; EMS Google Sheets integration)',
+            CURLOPT_USERAGENT => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         ]);
         $response = curl_exec($curl);
         $statusCode = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
@@ -108,23 +132,71 @@ function getGoogleSheetTabs(string $sheetURL): array
         }
     }
 
+    // Fallback to file_get_contents
     if ($html === false && filter_var(ini_get('allow_url_fopen'), FILTER_VALIDATE_BOOLEAN)) {
         $context = stream_context_create([
+            'ssl' => [
+                'verify_peer' => false,
+                'verify_peer_name' => false,
+            ],
             'http' => [
                 'timeout' => 15,
-                'user_agent' => 'Mozilla/5.0 (compatible; EMS Google Sheets integration)',
+                'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'follow_location' => 1,
                 'max_redirects' => 5,
             ],
         ]);
-        $html = @file_get_contents($url, false, $context);
+        $html = @file_get_contents($editUrl, false, $context);
     }
 
     if (!is_string($html) || $html === '') {
         return [];
     }
 
+    // Try multiple parsing strategies
+    $tabs = parseGoogleSheetTabsHtmlModern($html);
+    if (!empty($tabs)) {
+        return $tabs;
+    }
+    
     return parseGoogleSheetTabsHtml($html);
+}
+
+function discoverGoogleSheetTabsByCSVProbing(string $spreadsheetId): array
+{
+    // Try to detect available sheets by probing CSV exports
+    // Google Sheets uses sequential GIDs starting from 0
+    // We'll try GIDs 0-10 to find accessible sheets
+    
+    $discoveredTabs = [];
+    $context = stream_context_create([
+        'ssl' => [
+            'verify_peer' => false,
+            'verify_peer_name' => false,
+        ],
+        'http' => [
+            'timeout' => 10,
+            'user_agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        ],
+    ]);
+    
+    for ($gid = 0; $gid <= 10; $gid++) {
+        $csvUrl = "https://docs.google.com/spreadsheets/d/{$spreadsheetId}/export?format=csv&gid={$gid}";
+        $csvData = @file_get_contents($csvUrl, false, $context);
+        
+        // If we get CSV data, this GID is valid
+        if ($csvData !== false && is_string($csvData) && strlen($csvData) > 0) {
+            // Extract the first line as a sample to verify it's valid CSV
+            $lines = explode("\n", trim($csvData));
+            if (!empty($lines[0])) {
+                // Successfully accessed this sheet
+                // Try to extract a meaningful name from the content or use a generic one
+                $discoveredTabs[$gid] = ['gid' => $gid, 'title' => 'Sheet ' . ($gid + 1)];
+            }
+        }
+    }
+    
+    return array_values($discoveredTabs);
 }
 
 function parseGoogleSheetTabsHtml(string $html): array
@@ -154,9 +226,48 @@ function parseGoogleSheetTabsHtml(string $html): array
     return array_values($tabsByGid);
 }
 
-// ============================================================================
-// Convert Google Sheet URL to CSV Export URL
-// ============================================================================
+function parseGoogleSheetTabsHtmlModern(string $html): array
+{
+    // Modern Google Sheets stores sheet metadata in JavaScript objects
+    // Look for patterns like: "properties":{"sheetId":0,"title":"Sheet1"...}
+    
+    $tabsByGid = [];
+    
+    // Pattern 1: Look for properties objects with sheetId and title
+    if (preg_match_all('/"properties"\s*:\s*\{[^}]*"sheetId"\s*:\s*(\d+)[^}]*"title"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"[^}]*\}/', $html, $matches, PREG_SET_ORDER)) {
+        foreach ($matches as $match) {
+            $gid = (int) $match[1];
+            $title = json_decode('"' . $match[2] . '"');
+            if (is_string($title) && $title !== '' && !isset($tabsByGid[$gid])) {
+                $tabsByGid[$gid] = ['gid' => $gid, 'title' => $title];
+            }
+        }
+    }
+    
+    // Pattern 2: Alternative format with title before sheetId
+    if (preg_match_all('/"properties"\s*:\s*\{[^}]*"title"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"[^}]*"sheetId"\s*:\s*(\d+)[^}]*\}/', $html, $matches, PREG_SET_ORDER)) {
+        foreach ($matches as $match) {
+            $gid = (int) $match[2];
+            $title = json_decode('"' . $match[1] . '"');
+            if (is_string($title) && $title !== '' && !isset($tabsByGid[$gid])) {
+                $tabsByGid[$gid] = ['gid' => $gid, 'title' => $title];
+            }
+        }
+    }
+    
+    // Pattern 3: Look for sheet objects in arrays
+    if (empty($tabsByGid) && preg_match_all('/"sheetId"\s*:\s*(\d+)[^}]*"title"\s*:\s*"((?:[^"\\\\]|\\\\.)*)"/', $html, $matches, PREG_SET_ORDER)) {
+        foreach ($matches as $match) {
+            $gid = (int) $match[1];
+            $title = json_decode('"' . $match[2] . '"');
+            if (is_string($title) && $title !== '' && !isset($tabsByGid[$gid])) {
+                $tabsByGid[$gid] = ['gid' => $gid, 'title' => $title];
+            }
+        }
+    }
+    
+    return array_values($tabsByGid);
+}
 
 function convertToCSVExportURL(string $sheetURL): ?string
 {
@@ -367,45 +478,82 @@ function getFieldMappingRows(PDO $pdo, int $eventId, array $registrationFields):
 // Fetch Method Management (Manual, Automatic, Real-time)
 // ============================================================================
 
+function acquireRegistrationFetchLock(PDO $pdo, int $eventId, int $timeout = 0): bool
+{
+    $stmt = $pdo->prepare("SELECT GET_LOCK(CONCAT('ems_rf_', LEFT(SHA2(CONCAT(DATABASE(), ':', :event_id), 256), 48)), :timeout)");
+    $stmt->bindValue(':event_id', $eventId, PDO::PARAM_INT);
+    $stmt->bindValue(':timeout', $timeout, PDO::PARAM_INT);
+    $stmt->execute();
+    $result = $stmt->fetchColumn();
+    if ($result === null || $result === false) {
+        throw new RuntimeException('Unable to acquire the registration fetch lock.');
+    }
+    return (int) $result === 1;
+}
+
+function releaseRegistrationFetchLock(PDO $pdo, int $eventId): void
+{
+    $stmt = $pdo->prepare("SELECT RELEASE_LOCK(CONCAT('ems_rf_', LEFT(SHA2(CONCAT(DATABASE(), ':', :event_id), 256), 48)))");
+    $stmt->execute([':event_id' => $eventId]);
+    if ((int) $stmt->fetchColumn() !== 1) {
+        throw new RuntimeException('Unable to release the registration fetch lock.');
+    }
+}
+
 function saveFetchMethod(PDO $pdo, int $eventId, string $method, bool $enabled, ?int $intervalMinutes = null): bool
 {
     ensureSettingsTable($pdo);
-    
-    $methodData = [
-        'enabled' => $enabled,
-        'interval_minutes' => $intervalMinutes,
-        'last_fetch' => date('Y-m-d H:i:s'),
-    ];
-    
-    $settingName = 'registration_fetch_' . $method . '_' . $eventId;
-    
-    // Check if setting already exists
-    $stmt = $pdo->prepare('SELECT setting_id FROM settings WHERE setting_name = :name LIMIT 1');
-    $stmt->execute([':name' => $settingName]);
-    $exists = $stmt->fetch();
-    
-    if ($exists) {
-        // Update existing
-        $stmt = $pdo->prepare(<<<'SQL'
+
+    $locked = false;
+    if ($method === 'automatic') {
+        $locked = acquireRegistrationFetchLock($pdo, $eventId, 5);
+        if (!$locked) {
+            throw new RuntimeException('An import is running for this event. Please try saving the fetch settings again.');
+        }
+    }
+    try {
+        $existingData = $method === 'automatic' ? (getFetchMethod($pdo, $eventId, $method) ?? []) : [];
+        $methodData = [
+            'enabled' => $enabled,
+            'interval_minutes' => $intervalMinutes,
+            'last_fetch' => $method === 'automatic' ? ($existingData['last_fetch'] ?? null) : date('Y-m-d H:i:s'),
+        ];
+        if ($method === 'automatic') {
+            $methodData = array_merge($existingData, $methodData);
+            if ($enabled && empty($existingData['enabled'])) {
+                unset($methodData['last_attempt'], $methodData['last_status'], $methodData['last_error'], $methodData['last_result']);
+            }
+        }
+
+        $settingName = 'registration_fetch_' . $method . '_' . $eventId;
+        $stmt = $pdo->prepare('SELECT setting_id FROM settings WHERE setting_name = :name LIMIT 1');
+        $stmt->execute([':name' => $settingName]);
+        $exists = $stmt->fetch();
+
+        if ($exists) {
+            $stmt = $pdo->prepare(<<<'SQL'
             UPDATE settings 
             SET setting_value = :value, updated_at = NOW()
             WHERE setting_name = :name
 SQL
-        );
-    } else {
-        // Insert new
-        $stmt = $pdo->prepare(<<<'SQL'
+            );
+        } else {
+            $stmt = $pdo->prepare(<<<'SQL'
             INSERT INTO settings (setting_name, setting_type, setting_value)
             VALUES (:name, :type, :value)
 SQL
-        );
-        $stmt->bindValue(':type', 'fetch_method');
+            );
+            $stmt->bindValue(':type', 'fetch_method');
+        }
+
+        $stmt->bindValue(':name', $settingName);
+        $stmt->bindValue(':value', json_encode($methodData, JSON_THROW_ON_ERROR));
+        return $stmt->execute();
+    } finally {
+        if ($locked) {
+            releaseRegistrationFetchLock($pdo, $eventId);
+        }
     }
-    
-    $stmt->bindValue(':name', $settingName);
-    $stmt->bindValue(':value', json_encode($methodData));
-    
-    return $stmt->execute();
 }
 
 function getFetchMethod(PDO $pdo, int $eventId, string $method): ?array
@@ -420,15 +568,20 @@ function getFetchMethod(PDO $pdo, int $eventId, string $method): ?array
         return null;
     }
     
-    return json_decode($result['setting_value'], true);
+    $data = json_decode($result['setting_value'], true, 512, JSON_THROW_ON_ERROR);
+    if (!is_array($data)) {
+        throw new RuntimeException('Invalid fetch method configuration for event ' . $eventId . '.');
+    }
+    return $data;
 }
 
 // ============================================================================
 // Duplicate Check
 // ============================================================================
 
-function findDuplicateRegistrationId(PDO $pdo, int $eventId, array $rowData, array $fieldMapping, array $defaultValues = []): ?int
+function findDuplicateRegistrationId(PDO $pdo, int $eventId, array $rowData, array $fieldMapping, array $defaultValues = [], ?bool &$hasDuplicateKey = null): ?int
 {
+    $hasDuplicateKey = false;
     $tableName = getRegistrationTableName($pdo);
     if ($tableName === null) {
         throw new RuntimeException('Registration table was not found.');
@@ -450,6 +603,7 @@ function findDuplicateRegistrationId(PDO $pdo, int $eventId, array $rowData, arr
             continue;
         }
 
+        $hasDuplicateKey = true;
         $stmt = $pdo->prepare(
             'SELECT registration_id FROM `' . $tableName . '` WHERE event_id = :event_id AND `' . $targetField . '` = :value LIMIT 1'
         );
@@ -537,7 +691,7 @@ function insertRegistrationFromMapping(PDO $pdo, int $eventId, array $rowData, a
 // Batch Fetch and Process
 // ============================================================================
 
-function fetchAndProcessRegistrations(PDO $pdo, int $eventId, string $csvExportURL): array
+function fetchAndProcessRegistrations(PDO $pdo, int $eventId, string $csvExportURL, bool $requireDuplicateKey = false): array
 {
     $result = [
         'success' => 0,
@@ -592,8 +746,12 @@ function fetchAndProcessRegistrations(PDO $pdo, int $eventId, string $csvExportU
         $rowResult['name'] = is_scalar($name) ? trim((string) $name) : '';
 
         try {
-            $duplicateRegistrationId = findDuplicateRegistrationId($pdo, $eventId, $rowData, $fieldMapping, $defaultValues);
-            if ($duplicateRegistrationId !== null) {
+            $hasDuplicateKey = false;
+            $duplicateRegistrationId = findDuplicateRegistrationId($pdo, $eventId, $rowData, $fieldMapping, $defaultValues, $hasDuplicateKey);
+            if ($requireDuplicateKey && !$hasDuplicateKey) {
+                $result['failed']++;
+                $rowResult['message'] = 'Automatic import requires a non-empty mapped email or mobile number for duplicate detection.';
+            } elseif ($duplicateRegistrationId !== null) {
                 $result['duplicates']++;
                 $rowResult['status'] = 'duplicate';
                 $rowResult['registration_id'] = $duplicateRegistrationId;

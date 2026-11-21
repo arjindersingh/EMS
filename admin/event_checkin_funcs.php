@@ -13,6 +13,7 @@ function ensureEventAttendanceTable(PDO $pdo): void
             checked_in_by VARCHAR(100) NULL,
             checked_in_by_user_id INT NULL,
             mode VARCHAR(20) NOT NULL DEFAULT 'qr',
+            accompanist_count INT UNSIGNED NULL,
             welcome_message TEXT NULL,
             whatsapp_sent TINYINT(1) NOT NULL DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -38,6 +39,7 @@ SQL
     $columns = [
         'checked_in_by_user_id' => 'INT NULL AFTER checked_in_by',
         'mode' => "VARCHAR(20) NOT NULL DEFAULT 'qr' AFTER checked_in_by_user_id",
+        'accompanist_count' => 'INT UNSIGNED NULL AFTER mode',
     ];
     foreach ($columns as $col => $definition) {
         $statement->execute([':column' => $col]);
@@ -75,6 +77,16 @@ SQL
 function isAjaxRequest(): bool
 {
     return !empty($_SERVER['HTTP_X_REQUESTED_WITH']) && strtolower((string) $_SERVER['HTTP_X_REQUESTED_WITH']) === 'xmlhttprequest';
+}
+
+function parseCheckinAccompanistCount(mixed $value): ?int
+{
+    if (!is_string($value)) {
+        return null;
+    }
+
+    $count = filter_var($value, FILTER_VALIDATE_INT, ['options' => ['min_range' => 0, 'max_range' => 2147483647]]);
+    return $count === false ? null : $count;
 }
 
 function parseQrPayload(string $payload): array
@@ -335,7 +347,7 @@ function sendWhatsappCheckinMessage(PDO $pdo, array $registration, string $messa
     return $result !== false;
 }
 
-function recordAttendance(PDO $pdo, int $eventId, int $registrationId, string $mode, ?int $checkedInByUserId, string $checkedInBy, string $welcomeMessage): array
+function recordAttendance(PDO $pdo, int $eventId, int $registrationId, string $mode, ?int $checkedInByUserId, string $checkedInBy, string $welcomeMessage, ?int $accompanistCount = null): array
 {
     $existing = getAttendanceRecord($pdo, $eventId, $registrationId);
     if ($existing) {
@@ -354,6 +366,7 @@ function recordAttendance(PDO $pdo, int $eventId, int $registrationId, string $m
             checked_in_by,
             checked_in_by_user_id,
             mode,
+            accompanist_count,
             welcome_message,
             whatsapp_sent
         ) VALUES (
@@ -362,6 +375,7 @@ function recordAttendance(PDO $pdo, int $eventId, int $registrationId, string $m
             :checked_in_by,
             :checked_in_by_user_id,
             :mode,
+            :accompanist_count,
             :welcome_message,
             :whatsapp_sent
         )
@@ -379,6 +393,7 @@ SQL);
             ':checked_in_by' => $checkedInBy === '' ? null : $checkedInBy,
             ':checked_in_by_user_id' => $checkedInByUserId,
             ':mode' => $mode,
+            ':accompanist_count' => $accompanistCount,
             ':welcome_message' => $welcomeMessage,
             ':whatsapp_sent' => $whatsappSent,
         ]);
